@@ -1,0 +1,6 @@
+{
+  "method": "GET",
+  "path": "/me/permissions",
+  "params": {},
+  "api_version": "v26.0"
+}

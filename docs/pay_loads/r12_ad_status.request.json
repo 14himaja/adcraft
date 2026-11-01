@@ -1,0 +1,8 @@
+{
+  "method": "GET",
+  "path": "/120254994914340712",
+  "params": {
+    "fields": "status,effective_status,configured_status"
+  },
+  "api_version": "v26.0"
+}

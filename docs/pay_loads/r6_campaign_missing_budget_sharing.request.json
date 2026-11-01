@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "path": "/act_29033614559610596/campaigns",
+  "params": {
+    "name": "auto-check-20261012-184530-should-fail",
+    "objective": "OUTCOME_TRAFFIC",
+    "status": "PAUSED",
+    "special_ad_categories": []
+  },
+  "api_version": "v26.0"
+}

@@ -1,0 +1,14 @@
+{
+  "data": [
+    {
+      "id": "1415879818267624",
+      "name": "Social Ads Demo"
+    }
+  ],
+  "paging": {
+    "cursors": {
+      "before": "QVFIVFhpR3F6cGFwcmpWWGlHX2lnczE5UzB3NUZAfRVZAjWXY3dk9vanFJbFJZAOXJVWnA4ZAXlzdThMeXdSTEZArVUhTaEt4d1p3cGgzcXcxVWljaUE2OFd4NE5B",
+      "after": "QVFIVFhpR3F6cGFwcmpWWGlHX2lnczE5UzB3NUZAfRVZAjWXY3dk9vanFJbFJZAOXJVWnA4ZAXlzdThMeXdSTEZArVUhTaEt4d1p3cGgzcXcxVWljaUE2OFd4NE5B"
+    }
+  }
+}

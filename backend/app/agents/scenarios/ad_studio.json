@@ -1,0 +1,118 @@
+{
+  "ad_drafter": [
+    {
+      "json": {
+        "title": "Python Course Launch",
+        "objective": "TRAFFIC",
+        "landing_url": "https://synxa.ai/python",
+        "countries": [
+          "IN"
+        ],
+        "city_names": [
+          "Bangalore"
+        ],
+        "age_min": 18,
+        "age_max": 24,
+        "genders": "ALL",
+        "interest_keywords": [
+          "Python",
+          "Computer programming",
+          "Software development"
+        ],
+        "daily_budget_inr": 500,
+        "duration_days": 7,
+        "variants": [
+          {
+            "headline": "Learn Python in 30 days",
+            "primary_text": "Live classes, real projects and a mentor who reviews your code. Start your coding career this month.",
+            "description": "Weekend batches in Bangalore",
+            "call_to_action": "SIGN_UP"
+          },
+          {
+            "headline": "From zero to Python projects",
+            "primary_text": "Build 5 portfolio projects with step-by-step lessons designed for college students.",
+            "description": "Beginner friendly",
+            "call_to_action": "LEARN_MORE"
+          },
+          {
+            "headline": "Code your first app this month",
+            "primary_text": "Small batches, live doubt-clearing and lifetime access to recordings. Seats fill fast.",
+            "description": "Enrol for the next batch",
+            "call_to_action": "SIGN_UP"
+          }
+        ],
+        "image_prompt": "Bright square photo of a smiling college student coding Python on a laptop in a modern Bangalore cafe, warm natural light",
+        "missing_info": [],
+        "warnings": []
+      }
+    }
+  ],
+  "copy_editor": [
+    {
+      "json": {
+        "variants": [
+          {
+            "headline": "Python in 30 days",
+            "primary_text": "Live classes, real projects and a mentor who reviews your code. Try the first week free.",
+            "description": "First week free",
+            "call_to_action": "SIGN_UP"
+          },
+          {
+            "headline": "From zero to Python projects",
+            "primary_text": "Build 5 portfolio projects with step-by-step lessons designed for college students.",
+            "description": "Beginner friendly",
+            "call_to_action": "LEARN_MORE"
+          },
+          {
+            "headline": "Code your first app this month",
+            "primary_text": "Small batches, live doubt-clearing and lifetime access to recordings. Seats fill fast.",
+            "description": "Enrol for the next batch",
+            "call_to_action": "SIGN_UP"
+          }
+        ]
+      }
+    }
+  ],
+  "ad_chat": [
+    {
+      "json": {
+        "reply": "Done: budget is now \u20b9200 a day for 14 days, Bangalore removed, and a new evening photo.",
+        "daily_budget_inr": 200,
+        "duration_days": 14,
+        "remove_city_names": [
+          "bangalore"
+        ],
+        "variants": [
+          {
+            "headline": "Python live classes from home",
+            "primary_text": "Live classes, real projects and a mentor who reviews your code. Start your coding career this month.",
+            "description": "Weekend batches in Bangalore",
+            "call_to_action": "SIGN_UP"
+          },
+          {
+            "headline": "From zero to Python projects",
+            "primary_text": "Build 5 portfolio projects with step-by-step lessons designed for college students.",
+            "description": "Beginner friendly",
+            "call_to_action": "LEARN_MORE"
+          },
+          {
+            "headline": "Code your first app this month",
+            "primary_text": "Small batches, live doubt-clearing and lifetime access to recordings. Seats fill fast.",
+            "description": "Enrol for the next batch",
+            "call_to_action": "SIGN_UP"
+          }
+        ],
+        "selected_variant": 1,
+        "image_prompt": "Square photo of a student coding Python on a laptop at night, warm desk lamp"
+      }
+    }
+  ],
+  "dm_agent": [
+    {
+      "json": {
+        "reply": "Hi! We are open 9am to 6pm, Monday to Saturday.",
+        "needs_human": false
+      }
+    }
+  ]
+}

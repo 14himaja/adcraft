@@ -1,0 +1,9 @@
+{
+  "method": "GET",
+  "path": "/search",
+  "params": {
+    "type": "adgeolocation",
+    "q": "Bengaluru"
+  },
+  "api_version": "v26.0"
+}

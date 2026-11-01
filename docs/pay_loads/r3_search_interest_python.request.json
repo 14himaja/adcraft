@@ -1,0 +1,9 @@
+{
+  "method": "GET",
+  "path": "/search",
+  "params": {
+    "type": "adinterest",
+    "q": "python"
+  },
+  "api_version": "v26.0"
+}

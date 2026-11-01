@@ -1,0 +1,8 @@
+{
+  "method": "GET",
+  "path": "/me",
+  "params": {
+    "fields": "id,name"
+  },
+  "api_version": "v26.0"
+}

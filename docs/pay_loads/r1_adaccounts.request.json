@@ -1,0 +1,8 @@
+{
+  "method": "GET",
+  "path": "/me/adaccounts",
+  "params": {
+    "fields": "account_id,account_status,currency,min_daily_budget"
+  },
+  "api_version": "v26.0"
+}

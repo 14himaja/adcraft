@@ -1,0 +1,8 @@
+{
+  "method": "DELETE",
+  "path": "/act_29033614559610596/adimages",
+  "params": {
+    "hash": "41f8a5bcb36b51bce68a65cee4cb2edb"
+  },
+  "api_version": "v26.0"
+}

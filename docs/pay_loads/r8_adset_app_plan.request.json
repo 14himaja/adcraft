@@ -1,0 +1,44 @@
+{
+  "method": "POST",
+  "path": "/act_29033614559610596/adsets",
+  "params": {
+    "name": "auto-check-20261012-184530-adset",
+    "campaign_id": "120254994912820712",
+    "lifetime_budget": "10673",
+    "start_time": "2026-10-13T18:00:00+0000",
+    "end_time": "2026-10-14T18:00:00+0000",
+    "billing_event": "IMPRESSIONS",
+    "optimization_goal": "LINK_CLICKS",
+    "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+    "status": "PAUSED",
+    "targeting": {
+      "geo_locations": {
+        "cities": [
+          {
+            "key": "1017930"
+          }
+        ]
+      },
+      "flexible_spec": [
+        {
+          "interests": [
+            {
+              "id": "6003682002118"
+            }
+          ]
+        }
+      ],
+      "publisher_platforms": [
+        "instagram"
+      ],
+      "instagram_positions": [
+        "stream"
+      ],
+      "targeting_automation": {
+        "advantage_audience": 0
+      }
+    },
+    "destination_type": "WEBSITE"
+  },
+  "api_version": "v26.0"
+}

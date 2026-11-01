@@ -1,0 +1,8 @@
+{
+  "method": "GET",
+  "path": "/1415879818267624",
+  "params": {
+    "fields": "id,name,instagram_business_account{id,username}"
+  },
+  "api_version": "v26.0"
+}

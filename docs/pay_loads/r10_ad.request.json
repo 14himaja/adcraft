@@ -1,0 +1,13 @@
+{
+  "method": "POST",
+  "path": "/act_29033614559610596/ads",
+  "params": {
+    "name": "auto-check-20261012-184530-ad",
+    "adset_id": "120254994913100712",
+    "creative": {
+      "creative_id": "1060473483635404"
+    },
+    "status": "PAUSED"
+  },
+  "api_version": "v26.0"
+}

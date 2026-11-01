@@ -1,0 +1,11 @@
+{
+  "method": "GET",
+  "path": "/120254994912820712/insights",
+  "params": {
+    "level": "ad",
+    "time_increment": 1,
+    "date_preset": "last_7d",
+    "fields": "ad_id,impressions,reach,frequency,clicks,inline_link_clicks,ctr,cpc,cpm,spend,date_start,date_stop"
+  },
+  "api_version": "v26.0"
+}

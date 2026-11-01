@@ -1,0 +1,100 @@
+{
+  "data": [
+    {
+      "key": "1017930",
+      "name": "Bangalore",
+      "type": "city",
+      "country_code": "IN",
+      "country_name": "India",
+      "region": "Karnataka",
+      "region_id": 1738,
+      "supports_region": true,
+      "supports_city": true
+    },
+    {
+      "key": "2796026",
+      "name": "Ulsoor",
+      "type": "neighborhood",
+      "country_code": "IN",
+      "country_name": "India",
+      "region": "Karnataka",
+      "region_id": 1738,
+      "supports_region": true,
+      "supports_city": true,
+      "geo_hierarchy_level": "NEIGHBORHOOD",
+      "geo_hierarchy_name": "NEIGHBORHOOD"
+    },
+    {
+      "key": "2793238",
+      "name": "Mahadevapura",
+      "type": "neighborhood",
+      "country_code": "IN",
+      "country_name": "India",
+      "region": "Karnataka",
+      "region_id": 1738,
+      "supports_region": true,
+      "supports_city": true,
+      "geo_hierarchy_level": "NEIGHBORHOOD",
+      "geo_hierarchy_name": "NEIGHBORHOOD"
+    },
+    {
+      "key": "2796630",
+      "name": "Bommanahalli",
+      "type": "neighborhood",
+      "country_code": "IN",
+      "country_name": "India",
+      "region": "Karnataka",
+      "region_id": 1738,
+      "supports_region": true,
+      "supports_city": true,
+      "geo_hierarchy_level": "NEIGHBORHOOD",
+      "geo_hierarchy_name": "NEIGHBORHOOD"
+    },
+    {
+      "key": "2795603",
+      "name": "Gottigere",
+      "type": "neighborhood",
+      "country_code": "IN",
+      "country_name": "India",
+      "region": "Karnataka",
+      "region_id": 1738,
+      "supports_region": true,
+      "supports_city": true,
+      "geo_hierarchy_level": "NEIGHBORHOOD",
+      "geo_hierarchy_name": "NEIGHBORHOOD"
+    },
+    {
+      "key": "2796020",
+      "name": "Uttarahalli",
+      "type": "neighborhood",
+      "country_code": "IN",
+      "country_name": "India",
+      "region": "Karnataka",
+      "region_id": 1738,
+      "supports_region": true,
+      "supports_city": true,
+      "geo_hierarchy_level": "NEIGHBORHOOD",
+      "geo_hierarchy_name": "NEIGHBORHOOD"
+    },
+    {
+      "key": "2796629",
+      "name": "Giri Nagar",
+      "type": "neighborhood",
+      "country_code": "IN",
+      "country_name": "India",
+      "region": "Karnataka",
+      "region_id": 1738,
+      "supports_region": true,
+      "supports_city": true,
+      "geo_hierarchy_level": "NEIGHBORHOOD",
+      "geo_hierarchy_name": "NEIGHBORHOOD"
+    }
+  ],
+  "paging": {
+    "cursors": {
+      "before": "MAZDZD",
+      "after": "NgZDZD"
+    },
+    "next": "https://graph.facebook.com/v26.0/search?type=adgeolocation&q=Bengaluru&access_token=<redacted>&limit=25&after=NgZDZD"
+  }
+}

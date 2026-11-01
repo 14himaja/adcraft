@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "path": "/act_29033614559610596/adimages",
+  "params": {
+    "bytes": "<generated test image, base64 omitted>"
+  },
+  "api_version": "v26.0"
+}

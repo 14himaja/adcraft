@@ -1,0 +1,25 @@
+{
+  "method": "POST",
+  "path": "/act_29033614559610596/adcreatives",
+  "params": {
+    "name": "auto-check-20261012-184530-creative",
+    "object_story_spec": {
+      "page_id": "1415879818267624",
+      "instagram_user_id": "17841416182311813",
+      "link_data": {
+        "link": "https://www.example.com",
+        "message": "Automated API check. This ad is never activated.",
+        "name": "Automated check",
+        "description": "Test only",
+        "image_hash": "41f8a5bcb36b51bce68a65cee4cb2edb",
+        "call_to_action": {
+          "type": "LEARN_MORE",
+          "value": {
+            "link": "https://www.example.com"
+          }
+        }
+      }
+    }
+  },
+  "api_version": "v26.0"
+}

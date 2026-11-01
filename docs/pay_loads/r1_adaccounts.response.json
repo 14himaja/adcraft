@@ -1,0 +1,24 @@
+{
+  "data": [
+    {
+      "account_id": "2279071366267627",
+      "account_status": 1,
+      "currency": "INR",
+      "min_daily_budget": 9673,
+      "id": "act_2279071366267627"
+    },
+    {
+      "account_id": "29033614559610596",
+      "account_status": 1,
+      "currency": "INR",
+      "min_daily_budget": 9673,
+      "id": "act_29033614559610596"
+    }
+  ],
+  "paging": {
+    "cursors": {
+      "before": "MTIwMjUxNjA5NjgxMzQwMzYz",
+      "after": "MTIwMjU0OTkyODI1MTUwNzEy"
+    }
+  }
+}
