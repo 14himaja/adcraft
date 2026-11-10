@@ -70,6 +70,9 @@ def build_container(
         )
 
     def real_gateway(connection: dict) -> tuple[AdsReader, AdsWriter]:
+        if connection.get("mode") == "fake":
+            fake = fake_gateway or FakeAdsGateway(fail_at=parse_fail_at(settings.fake_meta_fail_at))
+            return fake, fake
         token = decrypt_token(settings.token_encryption_key, connection["token_ciphertext"])
         gateway = MetaSdkGateway(access_token=token, settings=settings)
         return gateway, gateway

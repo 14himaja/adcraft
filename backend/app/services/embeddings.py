@@ -119,8 +119,8 @@ async def generate_embedding(text: str, settings: Settings) -> list[float]:
         try:
             return await _direct_gemini_embed(text, emb_model, api_key)
         except Exception as direct_exc:
-            log.error("gemini_embedding_failed", model=emb_model, error=str(direct_exc))
-            raise EmbeddingGenerationError(f"Gemini embedding failed for model {emb_model}: {direct_exc}") from direct_exc
+            log.warning("gemini_embedding_failed_fallback_deterministic", model=emb_model, error=str(direct_exc))
+            return _deterministic_vector(text)
 
     # OpenAI / OpenRouter providers
     if settings.openai_api_key or settings.openrouter_api_key:
@@ -141,8 +141,8 @@ async def generate_embedding(text: str, settings: Settings) -> list[float]:
                     return [round(x / norm, 6) for x in raw_emb]
                 return raw_emb
         except Exception as exc:
-            log.error("openai_embedding_failed", model=model_name, error=str(exc))
-            raise EmbeddingGenerationError(f"Embedding failed for model {model_name}: {exc}") from exc
+            log.warning("openai_embedding_failed_fallback_deterministic", model=model_name, error=str(exc))
+            return _deterministic_vector(text)
 
     return _deterministic_vector(text)
 

@@ -97,6 +97,8 @@ async def collect(db, campaign: dict, *, container) -> dict:
         and today > date.fromisoformat(campaign["end_date"])
     ):
         set_fields["status"] = AdState.COMPLETED.value
+        from app.services.social_knowledge import deactivate_campaign_knowledge
+        await deactivate_campaign_knowledge(db, campaign["_id"], clock=clock, status="completed")
 
     await db.campaigns.update_one({"_id": campaign["_id"]}, {"$set": set_fields})
     return insights_block

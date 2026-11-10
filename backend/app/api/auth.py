@@ -1,3 +1,4 @@
+from app.domain.workspaces import resolve_workspace_id
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -64,7 +65,7 @@ def _workspaces_for_user(user: dict) -> list[dict]:
 def _public(user: dict) -> dict:
     name = user.get("name") or user["email"].split("@")[0].title()
     workspaces = _workspaces_for_user(user)
-    active_ws_id = user.get("active_workspace_id") or "synxait"
+    active_ws_id = resolve_workspace_id(user=user)
     active_ws = next((w for w in workspaces if w["id"] == active_ws_id), workspaces[0])
     return {
         "id": str(user["_id"]),

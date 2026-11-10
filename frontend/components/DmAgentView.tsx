@@ -127,9 +127,21 @@ function Chat({
             )}
           </p>
         </div>
+        {thread.context_post_id && (
+          <span
+            data-testid="thread-context-post-badge"
+            className="px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 truncate max-w-[200px]"
+            title={`Linked Post: ${thread.context_post_title || ''} (ID: ${thread.context_post_id})`}
+          >
+            Post: {thread.context_post_title || thread.context_post_id}
+          </span>
+        )}
         <span className={`px-2 py-0.5 rounded-md text-xs font-bold ${thread.status === 'NEEDS_HUMAN' ? 'bg-rose-500/10 text-rose-600' : 'bg-[#FEECE7] text-[#F26D5B]'}`}>
           {STATUS_LABEL[thread.status]}
         </span>
+        {thread.needs_attention && thread.status === 'BOT' && (
+          <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-amber-500/10 text-amber-600">Needs attention</span>
+        )}
       </div>
       <ul className="flex-1 flex flex-col gap-2 px-4 py-3 overflow-y-auto max-h-[420px] text-sm">
         {allMessages.map((m, i) => {
@@ -196,7 +208,14 @@ export function DmAgentView() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [question, setQuestion] = useState('');
-  const [answer, setAnswer] = useState<{ reply: string; needs_human: boolean } | null>(null);
+  const [targetPostId, setTargetPostId] = useState('');
+  const [answer, setAnswer] = useState<{
+    reply: string;
+    needs_human: boolean;
+    escalation_reason?: string | null;
+    resolved_post_id?: string | null;
+    resolved_post_title?: string | null;
+  } | null>(null);
   const [asking, setAsking] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = threads?.find((t) => t.id === selectedId) ?? threads?.[0];
@@ -222,7 +241,7 @@ export function DmAgentView() {
     setAsking(true);
     setError(null);
     try {
-      setAnswer(await previewDm(question.trim()));
+      setAnswer(await previewDm(question.trim(), targetPostId.trim() || undefined));
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -321,16 +340,46 @@ export function DmAgentView() {
 
       <div className="border-b border-[#EDE6DD] dark:border-white/10 pb-8 space-y-3">
         <h3 className="text-sm font-bold text-[#1F1A18] dark:text-white">Try it (saved text only, nothing is sent)</h3>
-        <div className="flex gap-2">
-          <input aria-label="Test question" className={inputCls} value={question} maxLength={1000}
-            onChange={(e) => setQuestion(e.target.value)} placeholder="What time do you open?" />
-          <button type="button" className={btnSecondary} disabled={asking || !question.trim()} onClick={ask}>Ask</button>
+        <p className="text-xs text-[#7A6C63] dark:text-slate-400">
+          Ask customer questions or specify a Post ID / URL to verify that post context is forwarded to the agent.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            aria-label="Test question"
+            className={`flex-1 ${inputCls}`}
+            value={question}
+            maxLength={1000}
+            onChange={(e) => setQuestion(e.target.value)}
+            placeholder="e.g. What is the price of this product?"
+          />
+          <input
+            aria-label="Post ID or URL"
+            className={`sm:w-60 ${inputCls}`}
+            value={targetPostId}
+            maxLength={200}
+            onChange={(e) => setTargetPostId(e.target.value)}
+            placeholder="Post ID / URL (optional)"
+          />
+          <button type="button" className={btnSecondary} disabled={asking || !question.trim()} onClick={ask}>
+            {asking ? 'Asking...' : 'Ask'}
+          </button>
         </div>
         {answer && (
-          <p role="status" className="text-xs text-[#1F1A18] dark:text-white">
-            {answer.reply}
-            {answer.needs_human && <span className="ml-2 font-bold text-rose-600">(the AI would hand over to you)</span>}
-          </p>
+          <div className="space-y-2 mt-2 p-3 rounded-lg bg-[#FAF8F5] dark:bg-white/5 border border-[#EDE6DD] dark:border-white/10">
+            <p role="status" aria-label="Agent answer" className="text-xs text-[#1F1A18] dark:text-white">
+              {answer.reply}
+              {answer.needs_human && <span className="ml-2 font-bold text-rose-600">(the AI would hand over to you)</span>}
+            </p>
+            {answer.resolved_post_id && (
+              <div
+                data-testid="resolved-post-badge"
+                aria-label="Resolved Post ID badge"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20"
+              >
+                <span>✓ Forwarded to Agent: Post ID <strong>{answer.resolved_post_id}</strong>{answer.resolved_post_title ? ` (${answer.resolved_post_title})` : ''}</span>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -369,6 +418,7 @@ export function DmAgentView() {
                         </span>
                         <span className="flex items-center gap-1.5">
                           {t.status === 'NEEDS_HUMAN' && <span className="w-2 h-2 shrink-0 rounded-full bg-rose-500" title="Needs you" />}
+                          {t.status !== 'NEEDS_HUMAN' && t.needs_attention && <span className="w-2 h-2 shrink-0 rounded-full bg-amber-500" title="The AI had no knowledge to answer with. Add business knowledge or reply yourself." />}
                           <span className="text-xs text-[#7A6C63] dark:text-slate-400 truncate">{last?.text}</span>
                         </span>
                       </span>

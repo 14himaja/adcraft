@@ -164,6 +164,7 @@ async def choose_assets(body: SelectionBody, user: UserDep, db: DbDep, container
         page=page,
         instagram=instagram,
         clock=container.clock,
+        container=container,
     )
     return public_view(saved, now=container.clock.now())
 

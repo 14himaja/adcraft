@@ -220,6 +220,17 @@ class MetaSdkGateway:
             ],
         }
 
+    async def get_ad_creative(self, creative_id: str) -> dict:
+        body = await self._read(
+            (creative_id,),
+            {"fields": "id,effective_instagram_media_id,instagram_permalink_url"},
+        )
+        return {
+            "id": body.get("id", creative_id),
+            "effective_instagram_media_id": body.get("effective_instagram_media_id"),
+            "instagram_permalink_url": body.get("instagram_permalink_url"),
+        }
+
     async def list_recent_posts(self, page_id: str, ig_user_id: str | None = None) -> list[dict]:
         posts = []
         if ig_user_id:
