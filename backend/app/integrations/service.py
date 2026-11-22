@@ -17,7 +17,6 @@ from app.integrations.oauth import (
     check_oauth_state,
     decrypt_connection_tokens,
     delete_connection,
-    generate_pkce_pair,
     get_connection,
     list_connections,
     make_oauth_state,

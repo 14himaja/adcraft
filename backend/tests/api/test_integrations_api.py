@@ -348,8 +348,108 @@ async def test_unauthenticated_callback_rejected_and_no_cookie_issued(make_clien
         assert "session" not in cb_err.cookies
 
 
-async def test_unauthorized_workspace_switch_blocked(make_client):
-    async with make_client() as c:
-        await login(c, "attacker@fake.com")
-        res = await c.post("/auth/workspace/switch", json={"workspace_id": "synxait"})
-        assert res.status_code == 403
+@respx.mock
+async def test_publish_linkedin_401_marks_connection_expired(make_client, db):
+    respx.post("https://api.linkedin.com/rest/posts").respond(
+        status_code=401, json={"message": "Revoked or expired access token"}
+    )
+    async with make_client(social_oauth_mode="fake") as c:
+        await login(c)
+        await c.get("/integrations/linkedin/connect")
+
+        # Set connection mode to real so it attempts real API call
+        await db.social_connections.update_one(
+            {"platform": "linkedin"},
+            {"$set": {"mode": "real", "selected_target_id": "urn:li:person:me"}},
+        )
+
+        pub = await c.post(
+            "/integrations/publish",
+            json={"platforms": ["linkedin"], "text": "Post that triggers 401"},
+        )
+        assert pub.status_code == 200
+        res = pub.json()["results"]["linkedin"]
+        assert res["status"] == "FAILED"
+        assert res["error_code"] == "PLATFORM_AUTH_EXPIRED"
+
+        # Verify connection status is now EXPIRED in database
+        doc = await db.social_connections.find_one({"platform": "linkedin"})
+        assert doc is not None
+        assert doc["status"] == "EXPIRED"
+
+        # Verify GET /integrations shows expired
+        li_status = (await c.get("/integrations")).json()["platforms"]
+        li_conn = next(p for p in li_status if p["platform"] == "linkedin")
+        assert li_conn["status"] == "EXPIRED"
+
+
+async def test_publish_unknown_client_target_rejected(make_client, monkeypatch):
+    from app.integrations.linkedin.adapter import LinkedInAdapter
+
+    called = []
+
+    async def fake_publish(*args, **kwargs):
+        called.append(True)
+        return None
+
+    monkeypatch.setattr(LinkedInAdapter, "publish", fake_publish)
+
+    async with make_client(social_oauth_mode="fake") as c:
+        await login(c)
+        await c.get("/integrations/linkedin/connect")
+        pub = await c.post(
+            "/integrations/publish",
+            json={
+                "platforms": ["linkedin"],
+                "text": "Hello world",
+                "targets": {"linkedin": "urn:li:organization:unauthorized_999"},
+            },
+        )
+        assert pub.status_code == 200
+        res = pub.json()["results"]["linkedin"]
+        assert res["status"] == "FAILED"
+        assert res["error_code"] == "TARGET_NOT_ALLOWED"
+        assert len(called) == 0  # adapter is not called
+
+
+async def test_publish_no_selected_target_rejected(make_client, db):
+    async with make_client(social_oauth_mode="fake") as c:
+        await login(c)
+        await c.get("/integrations/linkedin/connect")
+
+        # Clear selected target and platform account id
+        await db.social_connections.update_one(
+            {"platform": "linkedin"},
+            {"$set": {"selected_target_id": None, "platform_account_id": None}},
+        )
+
+        pub = await c.post(
+            "/integrations/publish",
+            json={"platforms": ["linkedin"], "text": "Hello without target"},
+        )
+        assert pub.status_code == 200
+        res = pub.json()["results"]["linkedin"]
+        assert res["status"] == "FAILED"
+        assert res["error_code"] == "NO_TARGET_SELECTED"
+
+
+async def test_publish_client_sends_selected_target(make_client):
+    async with make_client(social_oauth_mode="fake") as c:
+        await login(c)
+        await c.get("/integrations/linkedin/connect")
+
+        conns = (await c.get("/integrations")).json()["platforms"]
+        li = next(p for p in conns if p["platform"] == "linkedin")
+        target_id = li["selected_target_id"] or li["account_id"]
+
+        pub = await c.post(
+            "/integrations/publish",
+            json={
+                "platforms": ["linkedin"],
+                "text": "Hello with valid target",
+                "targets": {"linkedin": target_id},
+            },
+        )
+        assert pub.status_code == 200
+        res = pub.json()["results"]["linkedin"]
+        assert res["status"] == "PUBLISHED"

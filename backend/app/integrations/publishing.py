@@ -14,7 +14,7 @@ from app.integrations.base.errors import (
     sanitize_error_message,
 )
 from app.integrations.base.models import PlatformId, PublishContent, PublishResult
-from app.integrations.oauth import tenant_scope
+from app.integrations.oauth import mark_connection_expired, tenant_scope
 from app.integrations.registry import get_adapter
 from app.integrations.service import _ensure_active_token
 from app.services import image_store, organic
@@ -139,53 +139,74 @@ async def publish_multi_platform(
             conn, access_token = await _ensure_active_token(
                 db, user_id, org_id, pid, settings=settings, clock=clock
             )
-            # Validate client-supplied target against connection targets (M-1)
-            target_id = conn.get("selected_target_id") or conn.get("platform_account_id")
+            # Validate client-supplied target against connection targets (M-1, N-3)
+            selected_target_id = conn.get("selected_target_id")
+            platform_account_id = conn.get("platform_account_id")
+            allowed = {t for t in (selected_target_id, platform_account_id) if t}
             client_target = targets.get(pid)
-            if client_target:
-                known_targets = set()
-                if conn.get("selected_target_id"):
-                    known_targets.add(conn["selected_target_id"])
-                if conn.get("platform_account_id"):
-                    known_targets.add(conn["platform_account_id"])
-                for acct in conn.get("discovered_accounts") or []:
-                    if isinstance(acct, dict) and acct.get("target_id"):
-                        known_targets.add(acct["target_id"])
-                if not known_targets or client_target in known_targets:
-                    target_id = client_target
 
-            target_name = conn.get("selected_target_name") or conn.get("account_display_name")
-            if conn.get("mode") == "fake" and image_id and not image_url:
-                image_url = f"https://fake.adcraft.local/public/images/{image_id}"
-
-            content = PublishContent(
-                text=text,
-                title=title,
-                link_url=link_url,
-                image_id=image_id,
-                image_url=image_url,
-                image_bytes=image_bytes,
-                image_content_type=image_ct,
-                hashtags=valid_tags,
-                target_id=target_id,
-                target_name=target_name,
-                media_type="IMAGE" if image_id else ("LINK" if link_url else "TEXT"),
-            )
-            validation_errors = adapter.validate_publish(content, conn)
-            if validation_errors:
+            if not allowed:
                 result = PublishResult(
                     platform=pid,
                     status="FAILED",
-                    target_id=target_id,
-                    target_name=target_name,
-                    error="; ".join(validation_errors),
-                    error_code="PLATFORM_VALIDATION_FAILED",
+                    target_id=None,
+                    target_name=None,
+                    error=f"No account or destination selected for {pid}.",
+                    error_code="NO_TARGET_SELECTED",
+                )
+            elif client_target and client_target not in allowed:
+                result = PublishResult(
+                    platform=pid,
+                    status="FAILED",
+                    target_id=client_target,
+                    target_name=None,
+                    error=f"Target '{client_target}' is not an authorized or selected destination for {pid}.",
+                    error_code="TARGET_NOT_ALLOWED",
                 )
             else:
-                result = await adapter.publish(
-                    access_token, content, conn, settings, container=container
+                target_id = client_target or selected_target_id or platform_account_id
+                target_name = conn.get("selected_target_name") or conn.get("account_display_name")
+                if conn.get("mode") == "fake" and image_id and not image_url:
+                    image_url = f"https://fake.adcraft.local/public/images/{image_id}"
+
+                content = PublishContent(
+                    text=text,
+                    title=title,
+                    link_url=link_url,
+                    image_id=image_id,
+                    image_url=image_url,
+                    image_bytes=image_bytes,
+                    image_content_type=image_ct,
+                    hashtags=valid_tags,
+                    target_id=target_id,
+                    target_name=target_name,
+                    media_type="IMAGE" if image_id else ("LINK" if link_url else "TEXT"),
                 )
+                validation_errors = adapter.validate_publish(content, conn)
+                if validation_errors:
+                    result = PublishResult(
+                        platform=pid,
+                        status="FAILED",
+                        target_id=target_id,
+                        target_name=target_name,
+                        error="; ".join(validation_errors),
+                        error_code="PLATFORM_VALIDATION_FAILED",
+                    )
+                else:
+                    result = await adapter.publish(
+                        access_token, content, conn, settings, container=container
+                    )
         except (IntegrationNotConnected, IntegrationAuthExpired) as exc:
+            if isinstance(exc, IntegrationAuthExpired):
+                log.warning("publish_token_expired", platform=pid, user_id=user_id)
+                await mark_connection_expired(
+                    db,
+                    user_id=user_id,
+                    organization_id=org_id,
+                    platform=pid,
+                    clock=clock,
+                    error=exc.message,
+                )
             result = PublishResult(
                 platform=pid,
                 status="FAILED",

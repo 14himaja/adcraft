@@ -1,18 +1,16 @@
 from typing import Annotated
 from urllib.parse import quote_plus
 
-from bson import ObjectId
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, StringConstraints
 
-from app.api.deps import ContainerDep, DbDep, OptionalUserDep, SESSION_COOKIE, SettingsDep, UserDep
+from app.api.deps import ContainerDep, DbDep, OptionalUserDep, SettingsDep, UserDep
 from app.integrations import publishing, service
 from app.integrations.advertising import list_advertising_platforms
 from app.integrations.base.errors import IntegrationNotConfigured
 from app.integrations.base.models import PlatformId
 from app.integrations.oauth.state import sanitize_return_to
-from app.security.jwt import decode_token, issue_token
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 
