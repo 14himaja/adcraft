@@ -119,8 +119,7 @@ async def generate_embedding(text: str, settings: Settings) -> list[float]:
         try:
             return await _direct_gemini_embed(text, emb_model, api_key)
         except Exception as direct_exc:
-            log.warning("gemini_embedding_failed_fallback_deterministic", model=emb_model, error=str(direct_exc))
-            return _deterministic_vector(text)
+            raise EmbeddingGenerationError(f"Gemini embedding failed: {direct_exc}") from direct_exc
 
     # OpenAI / OpenRouter providers
     if settings.openai_api_key or settings.openrouter_api_key:
@@ -141,9 +140,21 @@ async def generate_embedding(text: str, settings: Settings) -> list[float]:
                     return [round(x / norm, 6) for x in raw_emb]
                 return raw_emb
         except Exception as exc:
-            log.warning("openai_embedding_failed_fallback_deterministic", model=model_name, error=str(exc))
-            return _deterministic_vector(text)
+            raise EmbeddingGenerationError(f"Embedding failed ({model_name}): {exc}") from exc
 
     return _deterministic_vector(text)
+
+
+async def try_embedding(text: str, settings: Settings) -> list[float] | None:
+    """Like generate_embedding, but returns None (and logs an error) when the provider fails.
+
+    Used on the live DM path so a provider outage degrades to keyword retrieval
+    instead of mixing fake vectors with real ones.
+    """
+    try:
+        return await generate_embedding(text, settings)
+    except EmbeddingGenerationError as exc:
+        log.error("embedding_unavailable_using_keyword_retrieval", error=str(exc))
+        return None
 
 

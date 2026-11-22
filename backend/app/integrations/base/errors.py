@@ -89,7 +89,7 @@ async def with_integration_retries(
     for attempt_idx in range(1, attempts + 1):
         try:
             return await fn(*args, **kwargs)
-        except BaseException as exc:
+        except Exception as exc:
             if not is_transient_integration_error(exc) or attempt_idx >= attempts:
                 raise
             if wait is not None:

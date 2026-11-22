@@ -652,6 +652,54 @@ async def test_query_embedding_shared_and_chunk_scan_limited_to_resolved_post(fa
 
 
 @pytest.mark.asyncio
+async def test_retrieval_uses_keywords_when_embedding_unavailable(fake_container):
+    db = MockDb()
+    ws_id = "ws_test"
+    await db.knowledge_chunks.insert_one({
+        "workspace_id": ws_id, "post_id": "p1", "is_active": True,
+        "text": "Chocolate cake combo costs 499 rupees", "embedding": [0.1] * 768,
+    })
+    await db.knowledge_chunks.insert_one({
+        "workspace_id": ws_id, "post_id": "p2", "is_active": True,
+        "text": "Running shoes sale this weekend", "embedding": [0.1] * 768,
+    })
+    rag = HybridRAG(db, fake_container.settings)
+
+    async def no_embedding(text, settings):
+        return None
+
+    import app.services.hybrid_rag as hybrid_rag
+    orig = hybrid_rag.try_embedding
+    hybrid_rag.try_embedding = no_embedding
+    try:
+        ctx = await rag.retrieve(workspace_id=ws_id, query="chocolate cake price")
+    finally:
+        hybrid_rag.try_embedding = orig
+
+    assert [c["post_id"] for c in ctx.semantic_chunks] == ["p1"]
+
+
+@pytest.mark.asyncio
+async def test_no_unrelated_product_attached_when_nothing_matches(fake_container):
+    db = MockDb()
+    ws_id = "ws_test"
+    post_id = ObjectId()
+    await db.social_posts.insert_one({
+        "_id": post_id, "workspace_id": ws_id, "post_status": "published",
+        "title": "Weekend feast", "subject": "restaurant",
+    })
+    await db.products.insert_one({
+        "workspace_id": ws_id, "product_status": "active",
+        "product_name": "Smartwatch", "description": "fitness tracker",
+    })
+    rag = HybridRAG(db, fake_container.settings)
+    ctx = await rag.retrieve(
+        workspace_id=ws_id, query="hello", resolved_post_id=str(post_id), query_embedding=[0.1] * 4
+    )
+    assert ctx.products == []
+
+
+@pytest.mark.asyncio
 async def test_auto_resume_skips_rate_limited_and_send_failed(fake_container):
     db = MockDb()
     user_id = ObjectId()

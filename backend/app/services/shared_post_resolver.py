@@ -8,7 +8,7 @@ from typing import Literal
 
 import structlog
 from app.clock import utcnow
-from app.services.embeddings import cosine_similarity, generate_embedding
+from app.services.embeddings import cosine_similarity, try_embedding
 
 log = structlog.get_logger()
 
@@ -272,7 +272,7 @@ class SharedPostContextResolver:
         if query_embedding is not None:
             query_emb = query_embedding
         else:
-            query_emb = await generate_embedding(query, self.settings)
+            query_emb = await try_embedding(query, self.settings)
         cursor = self.db.knowledge_chunks.find({
             "workspace_id": workspace_id,
             "is_active": True,

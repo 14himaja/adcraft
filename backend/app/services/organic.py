@@ -3,6 +3,10 @@ from app.domain.workspaces import resolve_workspace_id
 
 Meta fetches the picture itself, so it is served from a signed public URL (PUBLIC_BASE_URL) that only
 works for the exact image id it was signed for.
+
+Note: The AI organic drafting flow currently targets Instagram specifications (1:1 square aspect ratio,
+2,200 character limit). LinkedIn integration supports direct publishing of text, links, and images
+(up to 3,000 characters) via the unified publisher (/api/integrations/publish).
 """
 
 import asyncio

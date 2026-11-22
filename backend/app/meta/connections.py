@@ -163,7 +163,7 @@ async def disconnect_asset(db, user_id, *, asset_type: str, clock: Clock) -> dic
             "instagram_username": "",
         }
 
-    return await db.meta_connections.find_one_and_update(
+    res = await db.meta_connections.find_one_and_update(
         {"user_id": user_id},
         {
             "$unset": unset_fields,
@@ -171,6 +171,10 @@ async def disconnect_asset(db, user_id, *, asset_type: str, clock: Clock) -> dic
         },
         return_document=ReturnDocument.AFTER,
     )
+    if res and not (res.get("ad_account_id") or res.get("page_id") or res.get("instagram_user_id")):
+        await db.meta_connections.delete_one({"user_id": user_id})
+        return {}
+    return res or {}
 
 
 async def mark_expired(db, user_id, *, clock: Clock) -> None:

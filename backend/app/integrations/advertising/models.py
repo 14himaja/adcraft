@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-AdPlatformId = Literal["meta_ads", "linkedin_ads", "x_ads", "pinterest_ads", "reddit_ads"]
+AdPlatformId = Literal["meta_ads", "linkedin_ads"]
 AdReadinessStatus = Literal[
     "READY",
     "CONNECTED_REQUIRES_SETUP",

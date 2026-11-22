@@ -21,7 +21,7 @@ from app.clock import utcnow
 from app.container import Container
 from app.errors import AppError, NotFound
 from app.meta.connections import MetaNotConnected, require_selected
-from app.services.embeddings import generate_embedding
+from app.services.embeddings import try_embedding
 from app.services.user_ai import settings_for_user
 
 log = structlog.get_logger()
@@ -246,7 +246,7 @@ async def preview(db, container: Container, user_id, message: str, post_id: str 
     from app.services.hybrid_rag import HybridRAG
     from app.services.shared_post_resolver import SharedPostContextResolver
 
-    query_emb = await generate_embedding(message, user_settings) if message else None
+    query_emb = await try_embedding(message, user_settings) if message else None
 
     resolver = SharedPostContextResolver(db, user_settings, container=container)
     resolved = await resolver.resolve(workspace_id=ws_id, message_text=message, query_embedding=query_emb)
@@ -595,7 +595,7 @@ async def _handle_messaging_batch_locked(
 
     query_emb = None
     if combined_text:
-        query_emb = await generate_embedding(combined_text, user_settings)
+        query_emb = await try_embedding(combined_text, user_settings)
 
     resolver = SharedPostContextResolver(db, user_settings, container=container)
     resolved = await resolver.resolve(

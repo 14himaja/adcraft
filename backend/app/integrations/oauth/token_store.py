@@ -85,8 +85,12 @@ async def save_connection_tokens(
     return doc
 
 
-async def sync_meta_to_social(db, *, user_id, organization_id: str, meta_conn: dict) -> None:
-    """Keep social_connections synchronized with legacy meta_connections for Instagram & Facebook."""
+def synthesize_meta_social_connection(
+    *, user_id, organization_id: str, platform: PlatformId, meta_conn: dict
+) -> dict | None:
+    """Construct an in-memory social_connection projection from meta_connections without writing to DB."""
+    if platform not in ("instagram", "facebook"):
+        return None
     now = meta_conn.get("updated_at") or meta_conn.get("created_at")
     tenant_id = f"{user_id}:{organization_id}"
     base = {
@@ -99,55 +103,65 @@ async def sync_meta_to_social(db, *, user_id, organization_id: str, meta_conn: d
         "status": meta_conn.get("status", "ACTIVE"),
         "mode": meta_conn.get("mode", "real"),
         "last_error": None,
+        "created_at": meta_conn.get("created_at") or now,
         "updated_at": now,
+        "schema_version": 1,
     }
 
-    ig_id = meta_conn.get("instagram_user_id")
-    ig_username = meta_conn.get("instagram_username")
-    ig_updates = {
-        **base,
-        "platform": "instagram",
-        "platform_account_id": ig_id,
-        "account_display_name": f"@{ig_username}" if ig_username else None,
-        "account_username": ig_username,
-        "account_type": "business" if ig_id else None,
-        "selected_target_id": ig_id,
-        "selected_target_name": f"@{ig_username}" if ig_username else None,
-        "selected_target_type": "instagram_account" if ig_id else None,
-        "metadata": {
-            "linked_page_id": meta_conn.get("page_id"),
-            "linked_page_name": meta_conn.get("page_name"),
-        },
-    }
-    await db.social_connections.update_one(
-        {"user_id": user_id, "organization_id": organization_id, "platform": "instagram"},
-        {"$set": ig_updates, "$setOnInsert": {"created_at": now, "schema_version": 1}},
-        upsert=True,
-    )
+    if platform == "instagram":
+        ig_id = meta_conn.get("instagram_user_id")
+        ig_username = meta_conn.get("instagram_username")
+        return {
+            **base,
+            "platform": "instagram",
+            "platform_account_id": ig_id,
+            "account_display_name": f"@{ig_username}" if ig_username else None,
+            "account_username": ig_username,
+            "account_type": "business" if ig_id else None,
+            "selected_target_id": ig_id,
+            "selected_target_name": f"@{ig_username}" if ig_username else None,
+            "selected_target_type": "instagram_account" if ig_id else None,
+            "metadata": {
+                "linked_page_id": meta_conn.get("page_id"),
+                "linked_page_name": meta_conn.get("page_name"),
+            },
+        }
+    elif platform == "facebook":
+        page_id = meta_conn.get("page_id")
+        page_name = meta_conn.get("page_name")
+        return {
+            **base,
+            "platform": "facebook",
+            "platform_account_id": page_id,
+            "account_display_name": page_name,
+            "account_username": page_name,
+            "account_type": "page" if page_id else None,
+            "selected_target_id": page_id,
+            "selected_target_name": page_name,
+            "selected_target_type": "facebook_page" if page_id else None,
+            "metadata": {
+                "ad_account_id": meta_conn.get("ad_account_id"),
+                "ad_account_name": meta_conn.get("ad_account_name"),
+                "currency": meta_conn.get("currency"),
+            },
+        }
+    return None
 
-    page_id = meta_conn.get("page_id")
-    page_name = meta_conn.get("page_name")
-    fb_updates = {
-        **base,
-        "platform": "facebook",
-        "platform_account_id": page_id,
-        "account_display_name": page_name,
-        "account_username": page_name,
-        "account_type": "page" if page_id else None,
-        "selected_target_id": page_id,
-        "selected_target_name": page_name,
-        "selected_target_type": "facebook_page" if page_id else None,
-        "metadata": {
-            "ad_account_id": meta_conn.get("ad_account_id"),
-            "ad_account_name": meta_conn.get("ad_account_name"),
-            "currency": meta_conn.get("currency"),
-        },
-    }
-    await db.social_connections.update_one(
-        {"user_id": user_id, "organization_id": organization_id, "platform": "facebook"},
-        {"$set": fb_updates, "$setOnInsert": {"created_at": now, "schema_version": 1}},
-        upsert=True,
-    )
+
+async def sync_meta_to_social(db, *, user_id, organization_id: str, meta_conn: dict) -> None:
+    """Explicitly persist meta_connections into social_connections for Instagram & Facebook if needed."""
+    now = meta_conn.get("updated_at") or meta_conn.get("created_at")
+    for plat in ("instagram", "facebook"):
+        synth = synthesize_meta_social_connection(
+            user_id=user_id, organization_id=organization_id, platform=plat, meta_conn=meta_conn
+        )
+        if synth:
+            doc_to_set = {k: v for k, v in synth.items() if k not in ("created_at", "schema_version")}
+            await db.social_connections.update_one(
+                {"user_id": user_id, "organization_id": organization_id, "platform": plat},
+                {"$set": doc_to_set, "$setOnInsert": {"created_at": now, "schema_version": 1}},
+                upsert=True,
+            )
 
 
 async def get_connection(db, *, user_id, organization_id: str, platform: PlatformId) -> dict | None:
@@ -155,16 +169,18 @@ async def get_connection(db, *, user_id, organization_id: str, platform: Platfor
         {"user_id": user_id, "organization_id": organization_id, "platform": platform}
     )
     if doc is None and platform in ("instagram", "facebook"):
-        meta_conn = await db.meta_connections.find_one({"user_id": user_id})
+        meta_conn = await db.meta_connections.find_one({
+            "user_id": user_id,
+            "$or": [{"workspace_id": organization_id}, {"organization_id": organization_id}, {"workspace_id": None, "organization_id": None}],
+        })
         if meta_conn and meta_conn.get("token_ciphertext"):
             # Only auto-sync if the user hasn't explicitly disconnected this specific platform
             tombstone = await db.social_connections.find_one(
                 {"user_id": user_id, "organization_id": organization_id, "platform": f"_disconnected_{platform}"}
             )
             if tombstone is None:
-                await sync_meta_to_social(db, user_id=user_id, organization_id=organization_id, meta_conn=meta_conn)
-                doc = await db.social_connections.find_one(
-                    {"user_id": user_id, "organization_id": organization_id, "platform": platform}
+                return synthesize_meta_social_connection(
+                    user_id=user_id, organization_id=organization_id, platform=platform, meta_conn=meta_conn
                 )
     return doc
 
@@ -175,17 +191,20 @@ async def list_connections(db, *, user_id, organization_id: str) -> dict[str, di
     ).to_list(50)
     by_platform = {doc["platform"]: doc for doc in docs if not str(doc["platform"]).startswith("_")}
     if "instagram" not in by_platform or "facebook" not in by_platform:
-        meta_conn = await db.meta_connections.find_one({"user_id": user_id})
+        meta_conn = await db.meta_connections.find_one({
+            "user_id": user_id,
+            "$or": [{"workspace_id": organization_id}, {"organization_id": organization_id}, {"workspace_id": None, "organization_id": None}],
+        })
         if meta_conn and meta_conn.get("token_ciphertext"):
             for plat in ("instagram", "facebook"):
                 if plat not in by_platform:
                     tombstone = f"_disconnected_{plat}"
                     if not any(d.get("platform") == tombstone for d in docs):
-                        await get_connection(db, user_id=user_id, organization_id=organization_id, platform=plat)
-            docs = await db.social_connections.find(
-                {"user_id": user_id, "organization_id": organization_id}
-            ).to_list(50)
-            by_platform = {doc["platform"]: doc for doc in docs if not str(doc["platform"]).startswith("_")}
+                        synth = synthesize_meta_social_connection(
+                            user_id=user_id, organization_id=organization_id, platform=plat, meta_conn=meta_conn
+                        )
+                        if synth:
+                            by_platform[plat] = synth
     return by_platform
 
 
@@ -207,6 +226,25 @@ async def select_connection_account(
     clock: Clock,
 ) -> dict | None:
     now = clock.now()
+    existing = await db.social_connections.find_one(
+        {"user_id": user_id, "organization_id": organization_id, "platform": platform}
+    )
+    if existing is None and platform in ("instagram", "facebook"):
+        meta_conn = await db.meta_connections.find_one({
+            "user_id": user_id,
+            "$or": [{"workspace_id": organization_id}, {"organization_id": organization_id}, {"workspace_id": None, "organization_id": None}],
+        })
+        if meta_conn and meta_conn.get("token_ciphertext"):
+            synth = synthesize_meta_social_connection(
+                user_id=user_id, organization_id=organization_id, platform=platform, meta_conn=meta_conn
+            )
+            if synth:
+                doc_to_set = {k: v for k, v in synth.items() if k not in ("created_at", "schema_version")}
+                await db.social_connections.update_one(
+                    {"user_id": user_id, "organization_id": organization_id, "platform": platform},
+                    {"$set": doc_to_set, "$setOnInsert": {"created_at": now, "schema_version": 1}},
+                    upsert=True,
+                )
     updates = {
         "platform_account_id": account.account_id,
         "account_display_name": account.display_name,
@@ -269,6 +307,17 @@ async def delete_connection(db, *, user_id, organization_id: str, platform: Plat
             {"$set": {"updated_at": clock.now()}},
             upsert=True,
         )
+        unset_map = {
+            "instagram": {"instagram_user_id": "", "instagram_username": ""},
+            "facebook": {"page_id": "", "page_name": ""},
+        }
+        res = await db.meta_connections.find_one_and_update(
+            {"user_id": user_id},
+            {"$unset": unset_map[platform], "$set": {"updated_at": clock.now()}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if res and not (res.get("ad_account_id") or res.get("page_id") or res.get("instagram_user_id")):
+            await db.meta_connections.delete_one({"user_id": user_id})
     await audit.record(
         db,
         actor="user",

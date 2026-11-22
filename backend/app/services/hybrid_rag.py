@@ -1,12 +1,15 @@
 """Hybrid RAG: Combines authoritative structured records with semantic vector retrieval."""
 
+import re
 from dataclasses import dataclass
 from bson import ObjectId
 import structlog
 
-from app.services.embeddings import cosine_similarity, generate_embedding
+from app.services.embeddings import cosine_similarity, try_embedding
 
 log = structlog.get_logger()
+
+_STOP_WORDS = {"the", "and", "for", "with", "about", "tell", "this", "that", "can", "you", "our", "your", "are", "have", "what", "how"}
 
 
 @dataclass
@@ -50,20 +53,34 @@ class HybridRAG:
         if resolved_post_id:
             try:
                 oid = ObjectId(resolved_post_id)
-                resolved_post = await self.db.social_posts.find_one({
+                post_query = {
                     "_id": oid,
                     "workspace_id": workspace_id,
                     "post_status": "published",
-                })
+                }
+                if user_id:
+                    uid_str = str(user_id)
+                    uid_clauses = [{"user_id": uid_str}]
+                    if ObjectId.is_valid(uid_str):
+                        uid_clauses.append({"user_id": ObjectId(uid_str)})
+                    post_query["$or"] = uid_clauses
+                resolved_post = await self.db.social_posts.find_one(post_query)
             except Exception:
                 resolved_post = None
 
             if resolved_post:
                 # Priority 2: Verified offer associated with that post
-                offer = await self.db.offers.find_one({
+                offer_query = {
                     "post_id": resolved_post_id,
                     "workspace_id": workspace_id,
-                })
+                }
+                if user_id:
+                    uid_str = str(user_id)
+                    uid_clauses = [{"user_id": uid_str}, {"user_id": None}]
+                    if ObjectId.is_valid(uid_str):
+                        uid_clauses.append({"user_id": ObjectId(uid_str)})
+                    offer_query["$or"] = uid_clauses
+                offer = await self.db.offers.find_one(offer_query)
                 if offer:
                     st = str(offer.get("offer_status", "")).upper()
                     if st in ("INACTIVE", "EXPIRED"):
@@ -78,6 +95,12 @@ class HybridRAG:
                     if len(w) > 3
                 ]
                 prod_query = {"workspace_id": workspace_id, "product_status": "active"}
+                if user_id:
+                    uid_str = str(user_id)
+                    uid_clauses = [{"user_id": uid_str}, {"user_id": None}]
+                    if ObjectId.is_valid(uid_str):
+                        uid_clauses.append({"user_id": ObjectId(uid_str)})
+                    prod_query["$or"] = uid_clauses
                 cursor_prod = self.db.products.find(prod_query)
                 all_prods = [p async for p in cursor_prod]
                 
@@ -91,7 +114,7 @@ class HybridRAG:
                     elif query and any(w.lower() in p_name for w in query.split() if len(w) > 3):
                         matched_prods.append(p)
                 # Cap products to top 2 most relevant to prevent context bloat
-                products = matched_prods[:2] if matched_prods else all_prods[:1]
+                products = matched_prods[:2]
 
         # Priority 4: Semantic vector search over active knowledge chunks
         semantic_chunks = []
@@ -99,11 +122,20 @@ class HybridRAG:
             if query_embedding is not None:
                 query_emb = query_embedding
             else:
-                query_emb = await generate_embedding(query, self.settings)
+                query_emb = await try_embedding(query, self.settings)
+            q_words = {
+                w for w in re.findall(r"[a-z0-9₹%]{3,}", query.lower()) if w not in _STOP_WORDS
+            }
             chunk_filter = {
                 "workspace_id": workspace_id,
                 "is_active": True,
             }
+            if user_id:
+                uid_str = str(user_id)
+                uid_clauses = [{"user_id": uid_str}, {"user_id": None}]
+                if ObjectId.is_valid(uid_str):
+                    uid_clauses.append({"user_id": ObjectId(uid_str)})
+                chunk_filter["$or"] = uid_clauses
             if resolved_post_id:
                 chunk_filter["post_id"] = {"$ne": str(resolved_post_id)}
 
@@ -115,14 +147,13 @@ class HybridRAG:
                 ch_text = (ch.get("text") or "").strip()
                 if not ch_text or ch_text in seen_texts:
                     continue
-                if emb:
-                    sim = cosine_similarity(query_emb, emb)
-                    # Boost relevance for chunks belonging to the currently discussed post
-                    if resolved_post_id and ch.get("post_id") == str(resolved_post_id):
-                        sim = min(1.0, sim + 0.10)
-                    if sim >= 0.28:  # relevance threshold
-                        seen_texts.add(ch_text)
-                        scored_chunks.append((sim, ch))
+                sim = cosine_similarity(query_emb, emb) if emb and query_emb else 0.0
+                # Keyword overlap catches exact terms (prices, product names) that vectors can miss
+                words = set(re.findall(r"[a-z0-9₹%]{3,}", ch_text.lower()))
+                lex = len(q_words & words) / len(q_words) if q_words else 0.0
+                if sim >= 0.28 or lex >= 0.5:  # relevance threshold
+                    seen_texts.add(ch_text)
+                    scored_chunks.append((sim + 0.3 * lex, ch))
 
             scored_chunks.sort(key=lambda s: s[0], reverse=True)
             semantic_chunks = [c for _, c in scored_chunks[:top_k]]

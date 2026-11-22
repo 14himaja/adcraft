@@ -1,6 +1,6 @@
-from app.domain.workspaces import resolve_workspace_id
 from typing import Annotated, Any
 
+from bson import ObjectId
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
@@ -9,7 +9,8 @@ from app import audit
 from app.api.deps import SESSION_COOKIE, current_user, get_db, get_settings_dep
 from app.clock import utcnow
 from app.config import Settings
-from app.errors import EmailTaken, Unauthenticated
+from app.domain.workspaces import is_internal_email, personal_workspace_id, resolve_workspace_id
+from app.errors import EmailTaken, Forbidden, Unauthenticated
 from app.security.jwt import issue_token
 from app.security.passwords import hash_password, verify_password
 
@@ -42,11 +43,12 @@ class SwitchWorkspaceBody(BaseModel):
 def _workspaces_for_user(user: dict) -> list[dict]:
     name = user.get("name") or user["email"].split("@")[0].title()
     custom_name = user.get("workspace_name") or f"{name}'s Brand"
-    is_synxa = "synxa" in user.get("email", "").lower()
+    is_synxa = is_internal_email(user.get("email", ""))
+    ws_id = personal_workspace_id(user)
 
     workspaces = [
         {
-            "id": "personal",
+            "id": ws_id,
             "name": custom_name,
             "label": custom_name,
             "type": "customer",
@@ -73,7 +75,7 @@ def _public(user: dict) -> dict:
     name = user.get("name") or user["email"].split("@")[0].title()
     workspaces = _workspaces_for_user(user)
     active_ws_id = resolve_workspace_id(user=user)
-    active_ws = next((w for w in workspaces if w["id"] == active_ws_id), workspaces[0])
+    active_ws = next((w for w in workspaces if w["id"] == active_ws_id or (active_ws_id == "personal" and w["id"] == personal_workspace_id(user))), workspaces[0])
     return {
         "id": str(user["_id"]),
         "email": user["email"],
@@ -94,13 +96,16 @@ async def register(
 ) -> dict:
     name = body.name.strip() if body.name else body.email.split("@")[0].title()
     workspace = body.workspace_name.strip() if body.workspace_name else f"{name}'s Brand"
-    is_synxa = "synxa" in body.email.lower()
+    is_synxa = is_internal_email(body.email)
+    user_oid = ObjectId()
+    personal_ws = f"personal:{user_oid}"
     user = {
+        "_id": user_oid,
         "email": body.email.lower(),
         "password_hash": hash_password(body.password),
         "name": name,
         "workspace_name": workspace,
-        "active_workspace_id": "synxait" if is_synxa else "personal",
+        "active_workspace_id": "synxait" if is_synxa else personal_ws,
         "created_at": utcnow(),
     }
     try:
@@ -136,13 +141,7 @@ async def login(
 ) -> dict:
     request.app.state.login_limiter.hit(request.client.host if request.client else "unknown")
     user = await db.users.find_one({"email": body.email.lower()})
-    print("LOGIN DEBUG - User found:", user is not None)
-    print(
-    "LOGIN DEBUG - Password hash exists:",
-    bool(user and user.get("password_hash")),
-)
     password_ok = verify_password(user["password_hash"] if user else _DUMMY_HASH, body.password)
-    print("LOGIN DEBUG - Password verified:", password_ok)
     if user is None or not password_ok:
         raise Unauthenticated("Invalid email or password")
     response.set_cookie(
@@ -194,19 +193,27 @@ async def switch_workspace(
     user: Annotated[dict, Depends(current_user)],
     db: Annotated[Any, Depends(get_db)],
 ) -> dict:
-    valid_ids = {"synxait", "personal"}
-    if body.workspace_id not in valid_ids:
-        raise Unauthenticated("Invalid workspace ID")
+    allowed_workspaces = _workspaces_for_user(user)
+    allowed_ids = {w["id"] for w in allowed_workspaces}
+    p_ws = personal_workspace_id(user)
+
+    target_id = body.workspace_id
+    if target_id == "personal":
+        target_id = p_ws
+
+    if target_id not in allowed_ids and target_id != p_ws:
+        raise Forbidden("Invalid workspace ID")
+
     await db.users.update_one(
         {"_id": user["_id"]},
-        {"$set": {"active_workspace_id": body.workspace_id, "updated_at": utcnow()}},
+        {"$set": {"active_workspace_id": target_id, "updated_at": utcnow()}},
     )
-    user["active_workspace_id"] = body.workspace_id
+    user["active_workspace_id"] = target_id
     await audit.record(
         db,
         actor="user",
         event_type="WORKSPACE_SWITCHED",
-        payload={"workspace_id": body.workspace_id},
+        payload={"workspace_id": target_id},
         user_id=user["_id"],
     )
     return _public(user)

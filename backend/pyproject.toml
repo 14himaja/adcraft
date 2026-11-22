@@ -31,6 +31,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+# -p no:anyio prevents anyio's pytest plugin from interfering with pytest-asyncio event loop fixtures on Windows
 addopts = "-p no:anyio"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

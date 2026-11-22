@@ -3,16 +3,23 @@ from typing import Any
 from bson import ObjectId
 from bson.errors import InvalidId
 from gridfs import AsyncGridFSBucket
+import structlog
 
 from app import audit
 from app.config import Settings
 from app.domain.hashtags import format_caption_with_hashtags, validate_hashtag_list
-from app.integrations.base.errors import IntegrationAuthExpired, IntegrationNotConnected
+from app.integrations.base.errors import (
+    IntegrationAuthExpired,
+    IntegrationNotConnected,
+    sanitize_error_message,
+)
 from app.integrations.base.models import PlatformId, PublishContent, PublishResult
 from app.integrations.oauth import tenant_scope
 from app.integrations.registry import get_adapter
 from app.integrations.service import _ensure_active_token
 from app.services import image_store, organic
+
+log = structlog.get_logger()
 
 
 async def _load_image_payload(
@@ -132,7 +139,21 @@ async def publish_multi_platform(
             conn, access_token = await _ensure_active_token(
                 db, user_id, org_id, pid, settings=settings, clock=clock
             )
-            target_id = targets.get(pid) or conn.get("selected_target_id") or conn.get("platform_account_id")
+            # Validate client-supplied target against connection targets (M-1)
+            target_id = conn.get("selected_target_id") or conn.get("platform_account_id")
+            client_target = targets.get(pid)
+            if client_target:
+                known_targets = set()
+                if conn.get("selected_target_id"):
+                    known_targets.add(conn["selected_target_id"])
+                if conn.get("platform_account_id"):
+                    known_targets.add(conn["platform_account_id"])
+                for acct in conn.get("discovered_accounts") or []:
+                    if isinstance(acct, dict) and acct.get("target_id"):
+                        known_targets.add(acct["target_id"])
+                if not known_targets or client_target in known_targets:
+                    target_id = client_target
+
             target_name = conn.get("selected_target_name") or conn.get("account_display_name")
             if conn.get("mode") == "fake" and image_id and not image_url:
                 image_url = f"https://fake.adcraft.local/public/images/{image_id}"
@@ -170,6 +191,14 @@ async def publish_multi_platform(
                 status="FAILED",
                 error=exc.message,
                 error_code=exc.code,
+            )
+        except Exception as exc:  # one platform failing must not stop the others (H-4)
+            log.exception("publish_failed", platform=pid)
+            result = PublishResult(
+                platform=pid,
+                status="FAILED",
+                error=sanitize_error_message(str(exc))[:300],
+                error_code="PUBLISH_FAILED",
             )
 
         res_dict = result.to_dict()

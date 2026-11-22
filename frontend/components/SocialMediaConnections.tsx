@@ -217,6 +217,12 @@ function ManageAccountModal({
             </div>
           )}
 
+          {platform.platform === 'linkedin' && orgAccounts.length === 0 && (
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-800 dark:text-amber-200">
+              Company Pages not listed? Page publishing requires LinkedIn Community Management API approval and organization scopes (<code className="font-mono">w_organization_social</code>). Personal profile publishing is active.
+            </div>
+          )}
+
           {/* Account / Target Selector */}
           <form onSubmit={handleSave} className="space-y-4">
             <div className="flex items-center justify-between">

@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta
+import hashlib
 from urllib.parse import quote, urlencode
 
 import httpx
+import structlog
 
 from app.config import Settings
 from app.domain.hashtags import format_caption_with_hashtags, validate_hashtag_list
@@ -10,6 +12,7 @@ from app.integrations.base.errors import (
     IntegrationApiError,
     IntegrationAuthExpired,
     IntegrationPermissionDenied,
+    sanitize_error_message,
 )
 from app.integrations.base.http import platform_request
 from app.integrations.base.models import (
@@ -20,6 +23,8 @@ from app.integrations.base.models import (
     PublishContent,
     PublishResult,
 )
+
+log = structlog.get_logger()
 
 LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
@@ -53,7 +58,7 @@ class LinkedInAdapter(SocialPlatformAdapter):
             description="Connect LinkedIn Organization Pages and profiles for text and image publishing.",
             capabilities=PlatformCapabilities(
                 supports_oauth=True,
-                supports_refresh=True,
+                supports_refresh=False,
                 supports_account_selection=True,
                 supports_text_post=True,
                 supports_image_post=True,
@@ -203,7 +208,7 @@ class LinkedInAdapter(SocialPlatformAdapter):
 
         accounts: list[DiscoveredAccount] = []
         granted = set((connection or {}).get("scopes") or [])
-        has_org_write = not granted or "w_organization_social" in granted
+        has_org_write = "w_organization_social" in granted
 
         # 1. Discover Organization Pages separately from personal identity
         try:
@@ -245,14 +250,14 @@ class LinkedInAdapter(SocialPlatformAdapter):
                         permission_note=(
                             "Organization Page administrator."
                             if has_org_write
-                            else "OAuth token lacks w_organization_social permission for Organization publishing."
+                            else "OAuth token lacks w_organization_social permission for Organization publishing. Page publishing needs LinkedIn approval."
                         ),
                         extra={"role": elem.get("role", "ADMINISTRATOR"), "identity_kind": "organization"},
                     )
                 )
-        except (IntegrationPermissionDenied, IntegrationApiError):
+        except (IntegrationPermissionDenied, IntegrationApiError) as exc:
             # Community Management API / organizationAcls may not be approved on this LinkedIn app yet
-            pass
+            log.warning("linkedin_organization_acls_failed", error=sanitize_error_message(str(exc)))
 
         # 2. Retrieve personal LinkedIn identity separately
         try:
@@ -337,14 +342,20 @@ class LinkedInAdapter(SocialPlatformAdapter):
         commentary = format_caption_with_hashtags(content.text or "", valid_tags)[:LINKEDIN_TEXT_MAX]
 
         if connection.get("mode") == "fake":
+            fake_id = hashlib.sha1(commentary.encode("utf-8")).hexdigest()[:10]
             return PublishResult(
                 platform="linkedin",
                 status="PUBLISHED",
-                platform_post_id=f"urn:li:share:fake_{abs(hash(commentary)) % 1000000}",
+                platform_post_id=f"urn:li:share:fake_{fake_id}",
                 post_url="https://www.linkedin.com/feed/update/urn:li:share:fake",
                 target_id=target,
                 target_name=target_name,
             )
+
+        # If both image and link URL are provided, include the link in commentary (M-3)
+        if content.image_bytes and content.link_url and content.link_url not in commentary:
+            extra_link = f"\n\n{content.link_url}"
+            commentary = (commentary[: LINKEDIN_TEXT_MAX - len(extra_link)] + extra_link) if len(commentary) + len(extra_link) > LINKEDIN_TEXT_MAX else (commentary + extra_link)
 
         headers = _rest_headers(access_token)
         payload: dict = {
@@ -381,6 +392,11 @@ class LinkedInAdapter(SocialPlatformAdapter):
                             "Content-Type": content.image_content_type or "image/jpeg",
                         },
                     )
+                if up.status_code == 401:
+                    raise IntegrationAuthExpired(
+                        "LinkedIn authorization expired or was revoked. Please reconnect.",
+                        {"platform": "linkedin"},
+                    )
                 if up.status_code >= 300:
                     raise IntegrationApiError(
                         f"LinkedIn image upload failed ({up.status_code})",
@@ -398,8 +414,13 @@ class LinkedInAdapter(SocialPlatformAdapter):
 
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(LINKEDIN_POSTS_URL, json=payload, headers=headers)
+            if resp.status_code == 401:
+                raise IntegrationAuthExpired(
+                    "LinkedIn authorization expired or was revoked. Please reconnect.",
+                    {"platform": "linkedin"},
+                )
             if resp.status_code >= 300:
-                msg = resp.text[:300]
+                msg = sanitize_error_message(resp.text[:300])
                 return PublishResult(
                     platform="linkedin",
                     status="FAILED",
@@ -417,13 +438,15 @@ class LinkedInAdapter(SocialPlatformAdapter):
                 target_id=target,
                 target_name=target_name,
             )
+        except (IntegrationAuthExpired, IntegrationPermissionDenied):
+            raise
         except Exception as exc:
             return PublishResult(
                 platform="linkedin",
                 status="FAILED",
                 target_id=target,
                 target_name=target_name,
-                error=str(exc)[:300],
+                error=sanitize_error_message(str(exc))[:300],
                 error_code="LINKEDIN_POST_FAILED",
             )
 

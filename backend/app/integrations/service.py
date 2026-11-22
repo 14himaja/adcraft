@@ -120,8 +120,6 @@ async def initiate_connect(
 
     code_verifier = None
     code_challenge = None
-    if adapter.platform_id == "x":
-        code_verifier, code_challenge = generate_pkce_pair()
 
     state = make_oauth_state(
         settings,

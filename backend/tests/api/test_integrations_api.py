@@ -13,12 +13,6 @@ REAL_INTEGRATION_ENV = {
     "meta_app_secret": "meta_secret",
     "linkedin_client_id": "li_id",
     "linkedin_client_secret": "li_secret",
-    "x_client_id": "x_id",
-    "x_client_secret": "x_secret",
-    "pinterest_client_id": "pin_id",
-    "pinterest_client_secret": "pin_secret",
-    "reddit_client_id": "rd_id",
-    "reddit_client_secret": "rd_secret",
 }
 
 
@@ -26,19 +20,16 @@ def _state_of(response) -> str:
     return parse_qs(urlparse(response.headers["location"]).query)["state"][0]
 
 
-async def test_list_integrations_returns_all_six_platforms(client):
+async def test_list_integrations_returns_all_three_platforms(client):
     await login(client)
     res = await client.get("/integrations")
     assert res.status_code == 200
     body = res.json()
-    assert body["total_platforms"] == 6
+    assert body["total_platforms"] == 3
     assert [p["platform"] for p in body["platforms"]] == [
-        "instagram",
         "facebook",
+        "instagram",
         "linkedin",
-        "x",
-        "pinterest",
-        "reddit",
     ]
     assert all(p["status"] == "NOT_CONNECTED" for p in body["platforms"])
 
@@ -52,18 +43,12 @@ async def test_unconfigured_platform_redirects_cleanly(make_client):
     assert "platform=linkedin" in res.headers["location"]
 
 
-async def test_real_oauth_redirects_include_state_and_pkce_for_x(make_client):
+async def test_real_oauth_redirects_include_state(make_client):
     async with make_client(**REAL_INTEGRATION_ENV) as c:
         await login(c)
         li = await c.get("/integrations/linkedin/connect")
-        x = await c.get("/integrations/x/connect")
-        pin = await c.get("/integrations/pinterest/connect")
-        rd = await c.get("/integrations/reddit/connect")
     assert li.headers["location"].startswith("https://www.linkedin.com/oauth/v2/authorization?")
-    assert x.headers["location"].startswith("https://x.com/i/oauth2/authorize?")
-    assert "code_challenge=" in x.headers["location"]
-    assert pin.headers["location"].startswith("https://www.pinterest.com/oauth/?")
-    assert rd.headers["location"].startswith("https://www.reddit.com/api/v1/authorize?")
+    assert "state=" in li.headers["location"]
 
 
 @respx.mock
@@ -131,45 +116,73 @@ async def test_linkedin_oauth_callback_org_discovery_selection_and_publish(make_
 
 
 @respx.mock
-async def test_x_pinterest_reddit_oauth_and_discovery(make_client):
-    # X
-    respx.post("https://api.x.com/2/oauth2/token").respond(
-        json={"access_token": "X-TOK", "refresh_token": "X-REF", "expires_in": 7200, "scope": "tweet.read tweet.write users.read offline.access"}
+async def test_linkedin_publish_image_article_and_errors(make_client):
+    respx.post("https://www.linkedin.com/oauth/v2/accessToken").respond(
+        json={"access_token": "LI-TOK", "refresh_token": "LI-REF", "expires_in": 3600, "scope": "openid profile w_member_social"}
     )
-    respx.get("https://api.x.com/2/users/me").respond(
-        json={"data": {"id": "x_1", "name": "AdCraft X", "username": "adcraft_x"}}
+    respx.get("https://api.linkedin.com/rest/organizationAcls").respond(json={"elements": []})
+    respx.get("https://api.linkedin.com/v2/userinfo").respond(
+        json={"sub": "member99", "name": "Test Poster", "email": "poster@example.com"}
     )
-    # Pinterest
-    respx.post("https://api.pinterest.com/v5/oauth/token").respond(
-        json={"access_token": "PIN-TOK", "refresh_token": "PIN-REF", "expires_in": 3600, "scope": "user_accounts:read,boards:read,pins:write"}
+    respx.post("https://api.linkedin.com/rest/images?action=initializeUpload").respond(
+        json={"value": {"uploadUrl": "https://upload.linkedin.com/media/123", "image": "urn:li:image:123"}}
     )
-    respx.get("https://api.pinterest.com/v5/user_account").respond(
-        json={"id": "pin_u1", "username": "adcraft_pin", "account_type": "BUSINESS"}
-    )
-    respx.get("https://api.pinterest.com/v5/boards").respond(
-        json={"items": [{"id": "b_1", "name": "Summer Ideas", "privacy": "PUBLIC"}]}
-    )
-    # Reddit
-    respx.post("https://www.reddit.com/api/v1/access_token").respond(
-        json={"access_token": "RD-TOK", "refresh_token": "RD-REF", "expires_in": 3600, "scope": "identity mysubreddits submit read"}
-    )
-    respx.get("https://oauth.reddit.com/api/v1/me").respond(json={"id": "rd_u1", "name": "adcraft_rd"})
-    respx.get("https://oauth.reddit.com/subreddits/mine/subscriber").respond(
-        json={"data": {"children": [{"data": {"display_name": "saasmarketing", "submission_type": "any"}}]}}
+    respx.put("https://upload.linkedin.com/media/123").respond(status_code=201)
+
+    post_route = respx.post("https://api.linkedin.com/rest/posts").respond(
+        status_code=201, headers={"x-restli-id": "urn:li:share:img99"}
     )
 
     async with make_client(**REAL_INTEGRATION_ENV) as c:
         await login(c)
-        for plat, code in [("x", "c_x"), ("pinterest", "c_pin"), ("reddit", "c_rd")]:
-            st = _state_of(await c.get(f"/integrations/{plat}/connect"))
-            cb = await c.get(f"/integrations/{plat}/callback", params={"code": code, "state": st})
-            assert cb.status_code == 302 and "connected=1" in cb.headers["location"]
+        state = _state_of(await c.get("/integrations/linkedin/connect"))
+        await c.get("/integrations/linkedin/callback", params={"code": "c_li", "state": state})
 
-        pin_accts = (await c.get("/integrations/pinterest/accounts")).json()["accounts"]
-        assert pin_accts[0]["target_id"] == "b_1"
+        # 1. Publish Article Link
+        pub_link = await c.post(
+            "/integrations/publish",
+            json={"platforms": ["linkedin"], "text": "Check out our site", "link_url": "https://example.com/post"},
+        )
+        assert pub_link.status_code == 200
+        assert pub_link.json()["results"]["linkedin"]["status"] == "PUBLISHED"
 
-        rd_accts = (await c.get("/integrations/reddit/accounts")).json()["accounts"]
-        assert any(a["target_id"] == "saasmarketing" for a in rd_accts)
+        # 2. Publish Image
+        import pytest
+        from app.config import Settings
+        from app.integrations.base.errors import IntegrationAuthExpired
+        from app.integrations.base.models import PublishContent
+        from app.integrations.registry import get_adapter
+
+        adapter = get_adapter("linkedin")
+        conn = (await c.get("/integrations/linkedin")).json()
+        img_res = await adapter.publish(
+            "LI-TOK",
+            PublishContent(text="Image caption", image_bytes=b"fake-image-bytes", target_id="urn:li:person:member99"),
+            conn,
+            Settings(
+                _env_file=None,
+                mongodb_uri="mongodb://localhost:27017",
+                jwt_secret="x" * 32,
+                token_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            ),
+        )
+        assert img_res.status == "PUBLISHED"
+        assert img_res.platform_post_id == "urn:li:share:img99"
+
+        # 3. Provider 401 error raises IntegrationAuthExpired
+        post_route.respond(status_code=401, json={"message": "Expired access token"})
+        with pytest.raises(IntegrationAuthExpired):
+            await adapter.publish(
+                "LI-TOK",
+                PublishContent(text="Should fail with 401", target_id="urn:li:person:member99"),
+                conn,
+                Settings(
+                    _env_file=None,
+                    mongodb_uri="mongodb://localhost:27017",
+                    jwt_secret="x" * 32,
+                    token_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                ),
+            )
 
 
 async def test_oauth_cancellation_and_cross_user_state_rejection(make_client):
@@ -195,7 +208,7 @@ async def test_multi_tenant_and_workspace_isolation(make_client):
     async with make_client(social_oauth_mode="fake", meta_mode="fake") as alice, make_client(
         social_oauth_mode="fake", meta_mode="fake"
     ) as bob:
-        await login(alice, "alice@example.com")
+        await login(alice, "alice@synxait.in")
         await login(bob, "bob@example.com")
 
         # Alice connects LinkedIn in default synxait workspace
@@ -231,7 +244,7 @@ async def test_instagram_and_facebook_independent_disconnect(make_client):
 
 
 @respx.mock
-async def test_token_expiration_and_auto_refresh(make_client, db, clock):
+async def test_token_expiration_and_auto_refresh(make_client, db, clock, settings):
     respx.post("https://www.linkedin.com/oauth/v2/accessToken").respond(
         json={"access_token": "LI-NEW-TOKEN", "refresh_token": "LI-NEW-REF", "expires_in": 3600}
     )
@@ -242,9 +255,16 @@ async def test_token_expiration_and_auto_refresh(make_client, db, clock):
         await login(c)
         await c.get("/integrations/linkedin/connect")
         # Force record to real mode & expired timestamp with a refresh token
+        from app.security.crypto import encrypt_token
         await db.social_connections.update_one(
             {"platform": "linkedin"},
-            {"$set": {"mode": "real", "token_expires_at": clock.now() - timedelta(hours=1)}},
+            {
+                "$set": {
+                    "mode": "real",
+                    "token_expires_at": clock.now() - timedelta(hours=1),
+                    "refresh_token_ciphertext": encrypt_token(settings.token_encryption_key, "LI-OLD-REF"),
+                }
+            },
         )
         accts = await c.get("/integrations/linkedin/accounts")
         assert accts.status_code == 200
@@ -266,27 +286,27 @@ async def test_multi_platform_publish_partial_failure_and_advertising_separation
     async with make_client(social_oauth_mode="fake", meta_mode="fake") as c:
         await login(c)
         await c.get("/integrations/linkedin/connect")
-        await c.get("/integrations/x/connect")
-        # Pinterest is NOT connected
+        await c.get("/integrations/facebook/connect")
+        # Instagram is NOT connected
 
         preview = await c.post(
             "/integrations/publish/preview",
-            json={"platforms": ["linkedin", "x", "pinterest"], "text": "Hello multi-platform!"},
+            json={"platforms": ["linkedin", "facebook", "instagram"], "text": "Hello multi-platform!"},
         )
         assert preview.status_code == 200
         assert preview.json()["previews"]["linkedin"]["valid"] is True
-        assert preview.json()["previews"]["x"]["valid"] is True
-        assert preview.json()["previews"]["pinterest"]["valid"] is False
+        assert preview.json()["previews"]["facebook"]["valid"] is True
+        assert preview.json()["previews"]["instagram"]["valid"] is False
 
         pub = await c.post(
             "/integrations/publish",
-            json={"platforms": ["linkedin", "x", "pinterest"], "text": "Hello multi-platform!"},
+            json={"platforms": ["linkedin", "facebook", "instagram"], "text": "Hello multi-platform!"},
         )
         assert pub.status_code == 200
         results = pub.json()["results"]
         assert results["linkedin"]["status"] == "PUBLISHED"
-        assert results["x"]["status"] == "PUBLISHED"
-        assert results["pinterest"]["status"] == "FAILED"
+        assert results["facebook"]["status"] == "PUBLISHED"
+        assert results["instagram"]["status"] == "FAILED"
 
         # Verify paid advertising remains separate and gated even when organic is connected
         ads = (await c.get("/integrations/advertising/platforms")).json()
@@ -304,32 +324,32 @@ async def test_unauthenticated_connect_redirects_to_login_with_target_param(clie
     assert "%2Fsettings%2Fconnections" in res.headers["location"]
 
 
-@respx.mock
-async def test_unauthenticated_callback_restores_user_from_signed_state(make_client, db):
-    respx.post("https://www.linkedin.com/oauth/v2/accessToken").respond(
-        json={"access_token": "LI-RESTORED-TOKEN", "refresh_token": "LI-RESTORED-REF", "expires_in": 3600, "scope": "openid profile"}
-    )
-    respx.get("https://api.linkedin.com/rest/organizationAcls").respond(json={"elements": []})
-    respx.get("https://api.linkedin.com/v2/userinfo").respond(
-        json={"sub": "restored_member", "name": "Restored User", "email": "restored@example.com"}
-    )
-
+async def test_unauthenticated_callback_rejected_and_no_cookie_issued(make_client, db):
     async with make_client(**REAL_INTEGRATION_ENV) as c:
         await login(c)
-        # Obtain signed state token tied to the user
         conn_res = await c.get("/integrations/linkedin/connect?return_to=/settings/connections")
         state = _state_of(conn_res)
 
-        # Clear session cookies to simulate cross-site cookie drop on OAuth redirect
+        # Clear session cookies to simulate unauthenticated request
         c.cookies.clear()
 
+        # Unauthenticated callback with code and state must NOT log the user in
         cb = await c.get("/integrations/linkedin/callback", params={"code": "auth_code_123", "state": state})
         assert cb.status_code == 302
-        assert "connected=1" in cb.headers["location"]
-        assert "platform=linkedin" in cb.headers["location"]
-        assert "/settings/connections" in cb.headers["location"]
+        assert "/login" in cb.headers["location"]
+        assert "error=session_expired" in cb.headers["location"]
+        assert "session" not in cb.cookies
 
-        # Verify session cookie was restored
-        assert "session" in cb.cookies
-        doc = await db.social_connections.find_one({"platform": "linkedin"})
-        assert doc is not None
+        # Attack scenario from B-1: callback with error=... and state must NOT issue a session cookie
+        cb_err = await c.get("/integrations/linkedin/callback", params={"error": "access_denied", "state": state})
+        assert cb_err.status_code == 302
+        assert "/login" in cb_err.headers["location"]
+        assert "error=session_expired" in cb_err.headers["location"]
+        assert "session" not in cb_err.cookies
+
+
+async def test_unauthorized_workspace_switch_blocked(make_client):
+    async with make_client() as c:
+        await login(c, "attacker@fake.com")
+        res = await c.post("/auth/workspace/switch", json={"workspace_id": "synxait"})
+        assert res.status_code == 403

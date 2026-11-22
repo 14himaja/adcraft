@@ -22,7 +22,7 @@ class SelectAccountBody(BaseModel):
 
 
 class PublishPreviewBody(BaseModel):
-    platforms: list[PlatformId] = Field(min_length=1, max_length=6)
+    platforms: list[PlatformId] = Field(min_length=1, max_length=3)
     text: Annotated[str, StringConstraints(max_length=65000)] = ""
     title: Annotated[str, StringConstraints(strip_whitespace=True, max_length=300)] | None = None
     link_url: Annotated[str, StringConstraints(strip_whitespace=True, max_length=2048)] | None = None
@@ -137,25 +137,13 @@ async def callback_platform(
     code: str | None = None,
     error: str | None = None,
 ) -> RedirectResponse:
-    resolved_user = user
-    restored_session = False
-    if resolved_user is None and state:
-        try:
-            claims = decode_token(state, f"{settings.jwt_secret}:social_oauth")
-            if claims.get("sub"):
-                resolved_user = await db.users.find_one({"_id": ObjectId(claims["sub"])})
-                if resolved_user:
-                    restored_session = True
-        except Exception:
-            resolved_user = None
-
-    if resolved_user is None:
+    if user is None:
         safe_return = sanitize_return_to(None)
         return RedirectResponse(f"/login?redirect={quote_plus(safe_return)}&error=session_expired", status_code=302)
 
     redirect_url = await service.handle_oauth_callback(
         db,
-        resolved_user,
+        user,
         platform,
         state=state,
         code=code,
@@ -164,17 +152,7 @@ async def callback_platform(
         clock=container.clock,
         container=container,
     )
-    resp = RedirectResponse(redirect_url, status_code=302)
-    if restored_session:
-        resp.set_cookie(
-            SESSION_COOKIE,
-            issue_token(str(resolved_user["_id"]), settings.jwt_secret),
-            httponly=True,
-            samesite="lax",
-            secure=settings.app_env == "production",
-            max_age=12 * 3600,
-        )
-    return resp
+    return RedirectResponse(redirect_url, status_code=302)
 
 
 @router.get("/{platform}/accounts")
