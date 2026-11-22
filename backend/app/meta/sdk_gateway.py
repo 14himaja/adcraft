@@ -220,6 +220,17 @@ class MetaSdkGateway:
             ],
         }
 
+    async def get_ad_creative(self, creative_id: str) -> dict:
+        body = await self._read(
+            (creative_id,),
+            {"fields": "id,effective_instagram_media_id,instagram_permalink_url"},
+        )
+        return {
+            "id": body.get("id", creative_id),
+            "effective_instagram_media_id": body.get("effective_instagram_media_id"),
+            "instagram_permalink_url": body.get("instagram_permalink_url"),
+        }
+
     async def list_recent_posts(self, page_id: str, ig_user_id: str | None = None) -> list[dict]:
         posts = []
         if ig_user_id:
@@ -333,6 +344,15 @@ class MetaSdkGateway:
         api = await self._as_page(page_id)
         body = await self._call("POST", (page_id, "photos"), {"url": image_url, "caption": caption}, api=api)
         return body.get("post_id") or body["id"]
+
+    async def publish_facebook_feed_post(self, page_id: str, message: str, link: str | None = None) -> str:
+        """A normal Page text or link post. Needs pages_manage_posts permission and the Page's token."""
+        api = await self._as_page(page_id)
+        params: dict[str, str] = {"message": message}
+        if link:
+            params["link"] = link
+        body = await self._call("POST", (page_id, "feed"), params, api=api)
+        return body.get("id") or body.get("post_id", "")
 
     async def publish_facebook_story(self, page_id: str, image_url: str) -> str:
         """A Page photo story: upload the photo unpublished, then turn it into a story."""

@@ -1,17 +1,19 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { login, register, UserProfile } from '../lib/api';
 import { Sparkles, User, Mail, Lock, Eye, EyeOff, Building, ArrowRight, Loader2 } from 'lucide-react';
 
 interface AuthFormProps {
   initialMode?: 'login' | 'register';
   onSuccess?: (user?: UserProfile) => void;
+  redirectTo?: string;
 }
 
-export function AuthForm({ initialMode = 'login', onSuccess }: AuthFormProps) {
+export function AuthForm({ initialMode = 'login', onSuccess, redirectTo }: AuthFormProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [mode, setMode] = useState<'login' | 'register'>(initialMode);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -21,6 +23,15 @@ export function AuthForm({ initialMode = 'login', onSuccess }: AuthFormProps) {
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const rawRedirect = redirectTo || searchParams?.get('redirect') || searchParams?.get('return_to');
+  const safeRedirect =
+    rawRedirect &&
+    rawRedirect.startsWith('/') &&
+    !rawRedirect.startsWith('//') &&
+    !rawRedirect.includes('\\')
+      ? rawRedirect
+      : null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,6 +44,12 @@ export function AuthForm({ initialMode = 'login', onSuccess }: AuthFormProps) {
         const profile = await login(email, password);
         if (onSuccess) {
           onSuccess(profile);
+        } else if (safeRedirect) {
+          if (safeRedirect.startsWith('/api/')) {
+            window.location.href = safeRedirect;
+          } else {
+            router.push(safeRedirect);
+          }
         } else {
           router.push('/settings/meta');
         }

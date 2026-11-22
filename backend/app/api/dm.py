@@ -12,7 +12,7 @@ Text = Annotated[str, StringConstraints(strip_whitespace=True)]
 
 
 class ConfigBody(BaseModel):
-    enabled: bool
+    enabled: bool = True
     business_name: Text = Field("", max_length=120)
     tone: Text = Field("Friendly and concise", max_length=200)
     knowledge: Text = Field("", max_length=6000)

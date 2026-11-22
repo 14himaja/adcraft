@@ -1,3 +1,4 @@
+from app.domain.workspaces import resolve_workspace_id
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -41,30 +42,37 @@ class SwitchWorkspaceBody(BaseModel):
 def _workspaces_for_user(user: dict) -> list[dict]:
     name = user.get("name") or user["email"].split("@")[0].title()
     custom_name = user.get("workspace_name") or f"{name}'s Brand"
-    return [
-        {
-            "id": "synxait",
-            "name": "Synxait",
-            "label": "Synxait (Dev/Test)",
-            "type": "development",
-            "description": "Default development and testing workspace with Synxait test assets",
-            "is_default": True,
-        },
+    is_synxa = "synxa" in user.get("email", "").lower()
+
+    workspaces = [
         {
             "id": "personal",
             "name": custom_name,
             "label": custom_name,
             "type": "customer",
-            "description": "Primary customer workspace",
-            "is_default": False,
-        },
+            "description": "Primary workspace",
+            "is_default": not is_synxa,
+        }
     ]
+    if is_synxa:
+        workspaces.insert(
+            0,
+            {
+                "id": "synxait",
+                "name": "Synxait",
+                "label": "Synxait (Dev/Test)",
+                "type": "development",
+                "description": "Default development and testing workspace with Synxait test assets",
+                "is_default": True,
+            },
+        )
+    return workspaces
 
 
 def _public(user: dict) -> dict:
     name = user.get("name") or user["email"].split("@")[0].title()
     workspaces = _workspaces_for_user(user)
-    active_ws_id = user.get("active_workspace_id") or "synxait"
+    active_ws_id = resolve_workspace_id(user=user)
     active_ws = next((w for w in workspaces if w["id"] == active_ws_id), workspaces[0])
     return {
         "id": str(user["_id"]),
@@ -86,11 +94,13 @@ async def register(
 ) -> dict:
     name = body.name.strip() if body.name else body.email.split("@")[0].title()
     workspace = body.workspace_name.strip() if body.workspace_name else f"{name}'s Brand"
+    is_synxa = "synxa" in body.email.lower()
     user = {
         "email": body.email.lower(),
         "password_hash": hash_password(body.password),
         "name": name,
         "workspace_name": workspace,
+        "active_workspace_id": "synxait" if is_synxa else "personal",
         "created_at": utcnow(),
     }
     try:
@@ -98,6 +108,14 @@ async def register(
     except DuplicateKeyError as exc:
         raise EmailTaken("This email is already registered") from exc
 
+    response.set_cookie(
+        SESSION_COOKIE,
+        issue_token(str(user["_id"]), settings.jwt_secret),
+        httponly=True,
+        samesite="lax",
+        secure=settings.app_env == "production",
+        max_age=12 * 3600,
+    )
     await audit.record(
         db,
         actor="user",

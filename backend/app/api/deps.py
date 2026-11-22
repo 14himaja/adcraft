@@ -38,6 +38,24 @@ async def current_user(
     return user
 
 
+async def optional_user(
+    request: Request,
+    db: Annotated[Any, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> dict | None:
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return None
+    try:
+        claims = decode_token(token, settings.jwt_secret)
+    except InvalidToken:
+        return None
+    try:
+        return await db.users.find_one({"_id": ObjectId(claims["sub"])})
+    except Exception:
+        return None
+
+
 class RateLimiter:
     """Fixed window per key.
     ponytail: in-process, single instance only; move to a shared store if the API is scaled out."""
@@ -68,4 +86,5 @@ from app.container import Container  # noqa: E402
 DbDep = Annotated[Any, Depends(get_db)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 UserDep = Annotated[dict, Depends(current_user)]
+OptionalUserDep = Annotated[dict | None, Depends(optional_user)]
 ContainerDep = Annotated[Container, Depends(get_container)]

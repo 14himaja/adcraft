@@ -82,8 +82,8 @@ export function MetaConnectCard() {
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- full-page redirect into the Meta OAuth flow
       window.location.href = '/api/v1/meta/connect';
     } catch {
-      // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- full-page navigation to sign in
-      window.location.href = '/login';
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- sign in then resume Meta OAuth
+      window.location.href = `/login?redirect=${encodeURIComponent('/api/v1/meta/connect')}`;
     }
   };
 

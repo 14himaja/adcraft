@@ -1,3 +1,4 @@
+from app.domain.workspaces import resolve_workspace_id
 """Instagram DM auto-reply: owner-written knowledge block, inbound webhook events, per-customer threads.
 
 Meta lets an app answer a DM for 24 hours after the customer's last message; we never send outside it.
@@ -6,6 +7,7 @@ Meta lets an app answer a DM for 24 hours after the customer's last message; we 
 import asyncio
 from asyncio import Lock
 from datetime import UTC, datetime, timedelta
+import time
 
 import structlog
 from bson import ObjectId
@@ -19,6 +21,7 @@ from app.clock import utcnow
 from app.container import Container
 from app.errors import AppError, NotFound
 from app.meta.connections import MetaNotConnected, require_selected
+from app.services.embeddings import generate_embedding
 from app.services.user_ai import settings_for_user
 
 log = structlog.get_logger()
@@ -34,6 +37,7 @@ DEFAULT_CONFIG = {
 }
 UNSUPPORTED = "[unsupported message, e.g. a photo or voice note]"
 _DM_LOCKS: dict[tuple[str, str], dict] = {}
+DEBOUNCE_DELAY: float = 0.6
 
 
 class OutsideWindow(AppError):
@@ -49,7 +53,16 @@ class DmNotReady(AppError):
 
 async def get_config(db, user_id) -> dict:
     record = await db.dm_settings.find_one({"user_id": user_id}) or {}
-    return {key: record.get(key, default) for key, default in DEFAULT_CONFIG.items()}
+    config = {key: record.get(key, default) for key, default in DEFAULT_CONFIG.items()}
+    if "enabled" not in record:
+        conn = await db.meta_connections.find_one({"user_id": user_id, "status": "ACTIVE"})
+        if not conn:
+            user = await db.users.find_one({"_id": user_id}) or {}
+            ws_id = resolve_workspace_id(user=user)
+            conn = await db.meta_connections.find_one({"workspace_id": ws_id, "status": "ACTIVE"})
+        if conn and (conn.get("instagram_user_id") or conn.get("page_id")):
+            config["enabled"] = True
+    return config
 
 
 async def save_config(db, container: Container, user_id, values: dict) -> dict:
@@ -59,20 +72,11 @@ async def save_config(db, container: Container, user_id, values: dict) -> dict:
         raise DmNotReady("Knowledge block must be 6,000 characters or fewer")
     if merged["enabled"]:
         user = await db.users.find_one({"_id": user_id}) or {}
-        ws_id = user.get("active_workspace_id") or "synxait"
-
-        # Check knowledge requirement: manual knowledge or automatic post knowledge chunks
-        has_manual = bool(merged["knowledge"] and merged["knowledge"].strip())
-        if not has_manual:
-            chunks_count = await db.knowledge_chunks.count_documents({
-                "$or": [{"workspace_id": ws_id}, {"business_id": ws_id}, {"user_id": user_id}]
-            })
-            if chunks_count == 0:
-                raise DmNotReady("Add business knowledge before enabling the DM agent.")
+        ws_id = resolve_workspace_id(user=user)
 
         conn = await db.meta_connections.find_one({"user_id": user_id, "status": "ACTIVE"})
-        if not conn:
-            conn = await db.meta_connections.find_one({"workspace_id": ws_id, "status": "ACTIVE"}) or await db.meta_connections.find_one({"status": "ACTIVE"})
+        if not conn and ws_id:
+            conn = await db.meta_connections.find_one({"workspace_id": ws_id, "status": "ACTIVE"})
         if not conn or not (conn.get("instagram_user_id") or conn.get("page_id")):
             raise MetaNotConnected("Connect your Instagram ads account in Settings first")
         if conn and conn.get("page_id"):
@@ -104,6 +108,9 @@ def _view(thread: dict, now: datetime | None = None) -> dict:
         "context_post_id": thread.get("context_post_id"),
         "context_post_title": thread.get("context_post_title"),
         "escalation": thread.get("escalation"),
+        "escalation_history": thread.get("escalation_history", []),
+        "needs_attention": bool(thread.get("needs_attention", False)),
+        "attention_reason": thread.get("attention_reason"),
         "last_inbound_at": thread["last_inbound_at"].isoformat(),
         "minutes_since_inbound": int(elapsed // 60),
         "reply_window_warning": timedelta(hours=22).total_seconds() <= elapsed < WINDOW.total_seconds(),
@@ -115,16 +122,28 @@ def _view(thread: dict, now: datetime | None = None) -> dict:
 async def list_threads(db, user_id, *, limit: int = 50, now: datetime | None = None) -> list[dict]:
     cursor = db.dm_threads.find({"user_id": user_id}).sort("updated_at", -1).limit(limit)
     threads = [_view(t, now) async for t in cursor]
-    priority = {"NEEDS_HUMAN": 0, "HUMAN": 1, "BOT": 2}
-    return sorted(threads, key=lambda t: priority.get(t["status"], 3))
+    def _sort_key(t):
+        if t["status"] == "NEEDS_HUMAN":
+            return 0
+        if t.get("needs_attention"):
+            return 1
+        if t["status"] == "HUMAN":
+            return 2
+        return 3
+    return sorted(threads, key=_sort_key)
 
 
 async def summary(db, user_id) -> dict:
     config = await get_config(db, user_id)
     count = await db.dm_threads.count_documents({"user_id": user_id, "status": "NEEDS_HUMAN"})
+    attention_count = await db.dm_threads.count_documents({"user_id": user_id, "needs_attention": True})
     latest = await db.dm_threads.find_one({"user_id": user_id}, sort=[("last_inbound_at", -1)])
-    return {"enabled": config["enabled"], "needs_human": count,
-            "last_inbound_at": latest["last_inbound_at"].isoformat() if latest else None}
+    return {
+        "enabled": config["enabled"],
+        "needs_human": count,
+        "needs_attention": attention_count,
+        "last_inbound_at": latest["last_inbound_at"].isoformat() if latest else None,
+    }
 
 
 async def _owned_thread(db, user_id, thread_id: str) -> dict:
@@ -165,7 +184,14 @@ async def _send(db, container: Container, connection: dict, thread: dict, text: 
             user_id=thread["user_id"],
         )
         await db.dm_threads.update_one(
-            {"_id": thread["_id"]}, {"$set": {"status": "NEEDS_HUMAN", "updated_at": now}}
+            {"_id": thread["_id"]},
+            {
+                "$set": {
+                    "status": "NEEDS_HUMAN",
+                    "escalation": {"reason": "SEND_FAILED", "error": str(exc)[:200], "escalated_at": now.isoformat()},
+                    "updated_at": now,
+                }
+            },
         )
         return False
     message = {"role": role, "text": text, "at": now, "mid": mid}
@@ -179,6 +205,11 @@ async def _send(db, container: Container, connection: dict, thread: dict, text: 
     return True
 
 
+def _log_latency(t_start: float, thread_id: str | ObjectId | None = None) -> None:
+    elapsed_ms = round((time.monotonic() - t_start) * 1000, 2)
+    log.info("dm_webhook_to_send_latency", elapsed_ms=elapsed_ms, thread_id=str(thread_id or ""))
+
+
 async def reply_as_human(db, container: Container, user_id, thread_id: str, text: str) -> dict:
     thread = await _owned_thread(db, user_id, thread_id)
     if container.clock.now() - thread["last_inbound_at"] > WINDOW:
@@ -186,13 +217,19 @@ async def reply_as_human(db, container: Container, user_id, thread_id: str, text
     connection = await require_selected(db, user_id, clock=container.clock)
     if not await _send(db, container, connection, thread, text, role="admin"):
         raise AppError("Instagram did not accept the message; try again")
-    await db.dm_threads.update_one({"_id": thread["_id"]}, {"$set": {"status": "HUMAN"}})
+    await db.dm_threads.update_one(
+        {"_id": thread["_id"]},
+        {"$set": {"status": "HUMAN", "needs_attention": False, "attention_reason": None}}
+    )
     return await get_thread(db, user_id, thread_id)
 
 
 async def resume_bot(db, user_id, thread_id: str) -> dict:
     thread = await _owned_thread(db, user_id, thread_id)
-    await db.dm_threads.update_one({"_id": thread["_id"]}, {"$set": {"status": "BOT"}})
+    await db.dm_threads.update_one(
+        {"_id": thread["_id"]},
+        {"$set": {"status": "BOT", "needs_attention": False, "attention_reason": None}}
+    )
     return await get_thread(db, user_id, thread_id)
 
 
@@ -204,17 +241,25 @@ async def preview(db, container: Container, user_id, message: str, post_id: str 
     config = await get_config(db, user_id)
     user_settings = await settings_for_user(db, user_id, container.settings)
     user = await db.users.find_one({"_id": user_id}) or {}
-    ws_id = user.get("active_workspace_id") or "synxait"
+    ws_id = resolve_workspace_id(user=user)
 
     from app.services.hybrid_rag import HybridRAG
     from app.services.shared_post_resolver import SharedPostContextResolver
 
-    resolver = SharedPostContextResolver(db, user_settings)
-    resolved = await resolver.resolve(workspace_id=ws_id, message_text=message)
+    query_emb = await generate_embedding(message, user_settings) if message else None
+
+    resolver = SharedPostContextResolver(db, user_settings, container=container)
+    resolved = await resolver.resolve(workspace_id=ws_id, message_text=message, query_embedding=query_emb)
     active_post_id = resolved.post_id if resolved else post_id
 
     rag = HybridRAG(db, user_settings)
-    h_context = await rag.retrieve(workspace_id=ws_id, query=message, resolved_post_id=active_post_id)
+    h_context = await rag.retrieve(
+        workspace_id=ws_id,
+        user_id=user_id,
+        query=message,
+        resolved_post_id=active_post_id,
+        query_embedding=query_emb,
+    )
 
     knowledge_payload = dict(config)
     knowledge_payload["prompt_context"] = h_context.prompt_context
@@ -235,35 +280,65 @@ async def preview(db, container: Container, user_id, message: str, post_id: str 
     }
 
 
-async def handle_messaging(db, container: Container, event: dict) -> None:
-    """Serialize a customer's events so replies remain ordered and rate limits cannot race."""
+def _extract_mid(event: dict) -> str | None:
     message = event.get("message") or {}
     customer = (event.get("sender") or {}).get("id")
-    recipient_id = (event.get("recipient") or {}).get("id")
-    entry_id = event.get("entry_id")
-    account_id = recipient_id or entry_id
-    mid = (
+    return (
         message.get("mid")
         or (event.get("reaction") or {}).get("mid")
         or (event.get("story_mention") or {}).get("mid")
         or (event.get("story_reply") or {}).get("mid")
         or (f"evt_{event.get('timestamp')}_{customer}" if event.get("timestamp") and customer else None)
     )
+
+
+async def handle_messaging(db, container: Container, event: dict) -> None:
+    """Serialize a customer's events with ~1.5s debounce so bursts merge into one reply."""
+    t_arrival = time.monotonic()
+    message = event.get("message") or {}
+    customer = (event.get("sender") or {}).get("id")
+    recipient_id = (event.get("recipient") or {}).get("id")
+    entry_id = event.get("entry_id")
+    account_id = recipient_id or entry_id
+    mid = _extract_mid(event)
     if (
         not (mid and account_id and customer)
         or message.get("is_echo")
         or customer in (recipient_id, entry_id)
     ):
         return
+
     key = (str(account_id), str(customer))
     entry = _DM_LOCKS.get(key)
     if entry is None:
-        entry = {"lock": Lock(), "users": 0}
+        entry = {
+            "lock": Lock(),
+            "users": 0,
+            "pending_events": [],
+            "processed_mids": set(),
+        }
         _DM_LOCKS[key] = entry
     entry["users"] += 1
+    entry["pending_events"].append((event, t_arrival))
+
     try:
         async with entry["lock"]:
-            await _handle_messaging_locked(db, container, event)
+            if mid in entry["processed_mids"]:
+                # Merged and replied to in an earlier task during debounce
+                return
+
+            if DEBOUNCE_DELAY > 0:
+                await asyncio.sleep(DEBOUNCE_DELAY)
+
+            events_batch = list(entry["pending_events"])
+            entry["pending_events"].clear()
+
+            for ev, _ in events_batch:
+                emid = _extract_mid(ev)
+                if emid:
+                    entry["processed_mids"].add(emid)
+
+            await _handle_messaging_batch_locked(db, container, key, events_batch)
     finally:
         entry["users"] -= 1
         if entry["users"] == 0 and _DM_LOCKS.get(key) is entry:
@@ -271,81 +346,178 @@ async def handle_messaging(db, container: Container, event: dict) -> None:
 
 
 async def _handle_messaging_locked(db, container: Container, event: dict) -> None:
-    """One `messaging` item of an Instagram webhook delivery."""
+    """Legacy entry point: process one event directly."""
     message = event.get("message") or {}
     customer = (event.get("sender") or {}).get("id")
     recipient_id = (event.get("recipient") or {}).get("id")
     entry_id = event.get("entry_id")
     account_id = recipient_id or entry_id
-    mid = (
-        message.get("mid")
-        or (event.get("reaction") or {}).get("mid")
-        or (event.get("story_mention") or {}).get("mid")
-        or (event.get("story_reply") or {}).get("mid")
-        or (f"evt_{event.get('timestamp')}_{customer}" if event.get("timestamp") and customer else None)
-    )
-    if (
-        not (mid and account_id and customer)
-        or message.get("is_echo")
-        or customer in (recipient_id, entry_id)
-    ):
+    if account_id and customer:
+        key = (str(account_id), str(customer))
+        await _handle_messaging_batch_locked(db, container, key, [(event, time.monotonic())])
+
+
+async def _handle_messaging_batch_locked(
+    db, container: Container, key: tuple[str, str], events_batch: list[tuple[dict, float]]
+) -> None:
+    """Processes a debounced batch of customer webhook events."""
+    if not events_batch:
         return
-    candidate_ids = [str(recipient_id)] if recipient_id else ([str(entry_id)] if entry_id else [])
+
+    account_id, customer = key
+    candidate_ids = set()
+    for ev, _ in events_batch:
+        rec = (ev.get("recipient") or {}).get("id")
+        if rec:
+            candidate_ids.add(str(rec))
+        ent = ev.get("entry_id")
+        if ent:
+            candidate_ids.add(str(ent))
+    if not candidate_ids:
+        candidate_ids.add(str(account_id))
+
     connection = await db.meta_connections.find_one(
         {
             "$or": [
-                {"instagram_user_id": {"$in": candidate_ids}},
-                {"page_id": {"$in": candidate_ids}},
+                {"instagram_user_id": {"$in": list(candidate_ids)}},
+                {"page_id": {"$in": list(candidate_ids)}},
             ],
             "status": "ACTIVE",
         }
     )
     if connection is None or not connection.get("page_id"):
         return
+
     now = container.clock.now()
-    try:
-        await db.dm_seen.insert_one(
-            {"_id": mid, "at": now, "user_id": connection["user_id"], "customer_id": customer}
-        )  # Meta redelivers; answer each message once
-    except DuplicateKeyError:
-        return
-    sent_at = datetime.fromtimestamp(event["timestamp"] / 1000, UTC) if event.get("timestamp") else now
     user_id = connection["user_id"]
+    valid_events: list[tuple[dict, float]] = []
+    for ev, t_arr in events_batch:
+        emid = _extract_mid(ev)
+        if not emid:
+            continue
+        try:
+            await db.dm_seen.insert_one(
+                {"_id": emid, "at": now, "user_id": user_id, "customer_id": customer}
+            )
+            valid_events.append((ev, t_arr))
+        except DuplicateKeyError:
+            continue
+
+    if not valid_events:
+        return
+
+    t_webhook_start = min(t_arr for _, t_arr in valid_events)
     ig_id = str(connection.get("instagram_user_id") or account_id)
 
-    raw_text = (message.get("text") or "").strip()
-    if raw_text:
-        text = raw_text
-    elif "reaction" in event:
-        emoji = event["reaction"].get("emoji") or event["reaction"].get("reaction") or "reaction"
-        text = f"[reaction: {emoji}]"
-    elif "story_mention" in event:
-        text = "[story mention]"
-    elif "story_reply" in event:
-        text = "[story reply]"
-    elif message.get("attachments"):
-        types = [a.get("type", "attachment") for a in message.get("attachments", [])]
-        text = f"[unsupported message: {', '.join(types)}]"
-    else:
-        text = UNSUPPORTED
+    customer_messages_to_push = []
+    extracted_texts = []
+    attachments_list = []
+    all_story_mention = True
+    all_reaction = True
+    all_postback = True
 
+    for ev, _ in valid_events:
+        msg = ev.get("message") or {}
+        emid = _extract_mid(ev)
+        sent_at = datetime.fromtimestamp(ev["timestamp"] / 1000, UTC) if ev.get("timestamp") else now
+        raw = (msg.get("text") or "").strip()
+
+        is_story_mention = "story_mention" in ev
+        is_reaction = "reaction" in ev
+        is_postback = "postback" in ev
+        is_story_reply = "story_reply" in ev
+
+        if not is_story_mention:
+            all_story_mention = False
+        if not is_reaction:
+            all_reaction = False
+        if not is_postback:
+            all_postback = False
+
+        if raw:
+            msg_text = raw
+            extracted_texts.append(raw)
+        elif is_reaction:
+            emoji = ev["reaction"].get("emoji") or ev["reaction"].get("reaction") or "reaction"
+            msg_text = f"[reaction: {emoji}]"
+        elif is_story_mention:
+            msg_text = "[story mention]"
+        elif is_story_reply:
+            msg_text = "[story reply]"
+        elif msg.get("attachments"):
+            types = [a.get("type", "attachment") for a in msg.get("attachments", [])]
+            msg_text = f"[unsupported message: {', '.join(types)}]"
+        else:
+            msg_text = UNSUPPORTED
+
+        customer_messages_to_push.append({
+            "role": "customer", "text": msg_text, "at": sent_at, "mid": emid
+        })
+
+        if msg.get("attachments"):
+            attachments_list.extend(msg.get("attachments"))
+
+        reply_to = msg.get("reply_to")
+        if isinstance(reply_to, dict) and reply_to.get("story"):
+            story_info = reply_to["story"]
+            attachments_list.append({
+                "type": "story_share",
+                "id": str(story_info.get("id") or ""),
+                "payload": {
+                    "id": str(story_info.get("id") or ""),
+                    "url": story_info.get("url") or "",
+                    "media_id": str(story_info.get("id") or ""),
+                }
+            })
+
+        if is_story_reply and isinstance(ev["story_reply"], dict):
+            sr = ev["story_reply"]
+            attachments_list.append({
+                "type": "story_reply",
+                "id": str(sr.get("story_id") or ""),
+                "payload": {
+                    "id": str(sr.get("story_id") or ""),
+                    "url": sr.get("link") or "",
+                    "media_id": str(sr.get("story_id") or ""),
+                }
+            })
+
+    last_sent_at = max(m["at"] for m in customer_messages_to_push)
     thread = await db.dm_threads.find_one_and_update(
         {"user_id": user_id, "customer_id": customer},
         {
             "$push": {
                 "messages": {
-                    "$each": [{"role": "customer", "text": text, "at": sent_at, "mid": mid}],
+                    "$each": customer_messages_to_push,
                     "$slice": -THREAD_KEEP,
                 }
             },
-            "$set": {"last_inbound_at": sent_at, "updated_at": now, "ig_user_id": ig_id},
+            "$set": {"last_inbound_at": last_sent_at, "updated_at": now, "ig_user_id": ig_id},
             "$setOnInsert": {"status": "BOT", "created_at": now},
         },
         upsert=True,
         return_document=ReturnDocument.AFTER,
     )
+
+    # 4 & 6. Auto-resume bot on customer next message unless escalation reason is RATE_LIMITED or SEND_FAILED, or human replied
+    if thread.get("status") == "NEEDS_HUMAN":
+        esc = thread.get("escalation") or {}
+        esc_reason = (esc.get("reason") if isinstance(esc, dict) else str(esc)) or ""
+        if esc_reason not in ("RATE_LIMITED", "SEND_FAILED"):
+            update_op = {
+                "$set": {"status": "BOT", "escalation": None, "updated_at": now},
+            }
+            if esc:
+                update_op["$push"] = {"escalation_history": esc}
+            await db.dm_threads.update_one({"_id": thread["_id"]}, update_op)
+            thread["status"] = "BOT"
+            if esc:
+                thread.setdefault("escalation_history", []).append(esc)
+            thread["escalation"] = None
+
+    # Fetch customer name in background without awaiting before _send
     name_task = None
-    if "customer_name" not in thread:  # asked once; run in background so reply isn't delayed
+    if "customer_name" not in thread:
         async def _fetch_customer_name() -> None:
             try:
                 gateway = container.gateway_for(connection)[1]
@@ -355,68 +527,83 @@ async def _handle_messaging_locked(db, container: Container, event: dict) -> Non
             await db.dm_threads.update_one({"_id": thread["_id"]}, {"$set": {"customer_name": name or ""}})
 
         name_task = asyncio.create_task(_fetch_customer_name())
+
     config = await get_config(db, user_id)
-    if not config["enabled"] or thread["status"] != "BOT" or now - sent_at > WINDOW:
+    if not config["enabled"] or thread["status"] != "BOT" or now - last_sent_at > WINDOW:
         if name_task is not None:
             try:
                 await name_task
             except Exception:
                 pass
         return
-    reply_to = message.get("reply_to")
-    # Story mentions, story replies, reactions, and postbacks are stored without automated text reply
-    if any(key in event for key in ("story_mention", "story_reply", "reaction", "postback")):
+
+    # Reactions, story mentions, and postbacks without customer text are stored without automated reply
+    # Note: story replies ARE replied to!
+    if not extracted_texts and (all_reaction or all_story_mention or all_postback):
+        if name_task is not None:
+            try:
+                await name_task
+            except Exception:
+                pass
         return
-    await db.dm_seen.update_one({"_id": mid}, {"$set": {"bot_eligible": True}})
+
+    for ev, _ in valid_events:
+        emid = _extract_mid(ev)
+        if emid:
+            await db.dm_seen.update_one({"_id": emid}, {"$set": {"bot_eligible": True}})
+
+    # Hourly rate limit (rapid check removed; hourly rate limit still replies)
     recent = await db.dm_seen.count_documents(
         {"user_id": user_id, "customer_id": customer, "bot_eligible": True,
          "at": {"$gte": now - timedelta(hours=1)}}
     )
-    rapid = await db.dm_seen.count_documents(
-        {"user_id": user_id, "customer_id": customer, "bot_eligible": True,
-         "at": {"$gte": now - timedelta(seconds=3)}}
-    )
-    if recent > 30 or rapid > 1:
+    if recent > 30:
+        await _send(db, container, connection, thread, config["handoff_message"], role="agent")
+        _log_latency(t_webhook_start, thread["_id"])
         await db.dm_threads.update_one(
-            {"_id": thread["_id"]}, {"$set": {"status": "NEEDS_HUMAN"}}
+            {"_id": thread["_id"]},
+            {
+                "$set": {
+                    "status": "NEEDS_HUMAN",
+                    "escalation": {
+                        "reason": "RATE_LIMITED",
+                        "error": "Hourly message cap exceeded (30/hr)",
+                        "escalated_at": now.isoformat(),
+                    },
+                    "updated_at": now,
+                }
+            },
         )
         await audit.record(
             db, actor="system", event_type="DM_RATE_LIMITED",
             payload={"thread_id": str(thread["_id"])}, user_id=user_id,
         )
+        if name_task is not None:
+            try:
+                await name_task
+            except Exception:
+                pass
         return
+
+    combined_text = "\n".join(extracted_texts).strip()
     user = await db.users.find_one({"_id": user_id}) or {}
-    ws_id = user.get("active_workspace_id") or "synxait"
+    ws_id = resolve_workspace_id(user=user)
     user_settings = await settings_for_user(db, user_id, container.settings)
 
     from app.services.shared_post_resolver import SharedPostContextResolver
     from app.services.hybrid_rag import HybridRAG
 
-    resolver = SharedPostContextResolver(db, user_settings)
-    attachments_list = list(message.get("attachments") or [])
-    if isinstance(reply_to, dict) and reply_to.get("story"):
-        story_info = reply_to["story"]
-        attachments_list.append({
-            "type": "story_share",
-            "id": str(story_info.get("id") or ""),
-            "payload": {
-                "id": str(story_info.get("id") or ""),
-                "url": story_info.get("url") or "",
-                "media_id": str(story_info.get("id") or ""),
-            }
-        })
-    if "story_reply" in event and isinstance(event["story_reply"], dict):
-        sr = event["story_reply"]
-        attachments_list.append({
-            "type": "story_reply",
-            "id": str(sr.get("story_id") or ""),
-            "payload": {
-                "id": str(sr.get("story_id") or ""),
-                "url": sr.get("link") or "",
-                "media_id": str(sr.get("story_id") or ""),
-            }
-        })
-    resolved = await resolver.resolve(workspace_id=ws_id, message_text=raw_text, attachments=attachments_list)
+    query_emb = None
+    if combined_text:
+        query_emb = await generate_embedding(combined_text, user_settings)
+
+    resolver = SharedPostContextResolver(db, user_settings, container=container)
+    resolved = await resolver.resolve(
+        workspace_id=ws_id,
+        message_text=combined_text,
+        attachments=attachments_list,
+        query_embedding=query_emb,
+    )
 
     context_post_id = thread.get("context_post_id")
     context_post_title = thread.get("context_post_title")
@@ -431,73 +618,147 @@ async def _handle_messaging_locked(db, container: Container, event: dict) -> Non
     if resolved and resolved.is_ambiguous and resolved.candidate_titles and len(resolved.candidate_titles) >= 2:
         c1, c2 = resolved.candidate_titles[0], resolved.candidate_titles[1]
         clarification = f"Are you asking about our '{c1}' or '{c2}'? Please let us know so we can help!"
-        if name_task is not None:
-            try:
-                await name_task
-            except Exception:
-                pass
         await _send(db, container, connection, thread, clarification, role="agent")
-        return
-
-    if not raw_text:
+        _log_latency(t_webhook_start, thread["_id"])
         if name_task is not None:
             try:
                 await name_task
             except Exception:
                 pass
-        if resolved:
-            greeting = f"Thanks for sharing! How can we help you with our {resolved.title or 'post'}?"
-            await _send(db, container, connection, thread, greeting, role="agent")
-            return
-        await _send(
-            db, container, connection, thread,
-            "I can read text only. Please type your question.", role="agent",
-        )
-        await db.dm_threads.update_one({"_id": thread["_id"]}, {"$set": {"status": "NEEDS_HUMAN"}})
         return
 
-    try:
-        input_tokens = output_tokens = 0
-        rag = HybridRAG(db, user_settings)
-        h_context = await rag.retrieve(
-            workspace_id=ws_id,
-            query=text,
-            resolved_post_id=context_post_id,
-        )
-        knowledge_payload = dict(config)
-        knowledge_payload["prompt_context"] = h_context.prompt_context
+    if not combined_text:
+        if resolved:
+            rag = HybridRAG(db, user_settings)
+            h_context = await rag.retrieve(
+                workspace_id=ws_id,
+                user_id=user_id,
+                query="Tell me about this product and offer",
+                resolved_post_id=resolved.post_id,
+            )
+            offer = h_context.offer
+            prod = h_context.products[0] if h_context.products else None
 
-        answer = await answer_dm(
-            knowledge=knowledge_payload,
-            history=thread["messages"][:-1],
-            message=text,
-            settings=user_settings,
+            post_title = resolved.title or (prod.get("product_name") if prod else "post")
+            price_val = (offer.get("price") if offer else None) or (prod.get("price") if prod else None)
+            discount_val = offer.get("discount") if offer else None
+            valid_until = offer.get("valid_until") if offer else None
+
+            reply_text = f"Thanks for sharing our post about '{post_title}'!"
+            if price_val:
+                reply_text += f" It is priced at ₹{price_val}."
+            if discount_val:
+                reply_text += f" Special offer: {discount_val} off"
+                if valid_until:
+                    reply_text += f" (valid until {valid_until})"
+                reply_text += "!"
+            reply_text += " How can we help you with it?"
+
+            await _send(db, container, connection, thread, reply_text, role="agent")
+            _log_latency(t_webhook_start, thread["_id"])
+            if name_task is not None:
+                try:
+                    await name_task
+                except Exception:
+                    pass
+            return
+
+        has_share_attachment = any(
+            str(a.get("type", "")).lower() in ("share", "story_share", "story_reply")
+            or "permalink" in (a.get("payload") or {})
+            for a in attachments_list
         )
-        needs_human = answer.needs_human
-        input_tokens, output_tokens = answer.input_tokens, answer.output_tokens
-        reply = config["handoff_message"] if needs_human else answer.text
-    except Exception as exc:
-        log.exception("dm_ai_failed")
+        if has_share_attachment:
+            ask_which = "Thanks for reaching out! Which product or offer can we help you with?"
+            await _send(db, container, connection, thread, ask_which, role="agent")
+        else:
+            # Unreadable or unknown photo with no accompanying text
+            await _send(
+                db,
+                container,
+                connection,
+                thread,
+                "I can read text only. Please type your question.",
+                role="agent",
+            )
+            await db.dm_threads.update_one({"_id": thread["_id"]}, {"$set": {"status": "NEEDS_HUMAN"}})
+        _log_latency(t_webhook_start, thread["_id"])
+        if name_task is not None:
+            try:
+                await name_task
+            except Exception:
+                pass
+        return
+
+    rag = HybridRAG(db, user_settings)
+    h_context = await rag.retrieve(
+        workspace_id=ws_id,
+        user_id=user_id,
+        query=combined_text,
+        resolved_post_id=context_post_id,
+        query_embedding=query_emb,
+    )
+    knowledge_payload = dict(config)
+    knowledge_payload["prompt_context"] = h_context.prompt_context
+
+    has_knowledge = bool(
+        (config.get("knowledge") or "").strip()
+        or h_context.resolved_post
+        or h_context.semantic_chunks
+    )
+
+    if not has_knowledge:
+        needs_human = False
+        reply = config["handoff_message"]
+        answer = None
+        input_tokens = output_tokens = 0
+        await db.dm_threads.update_one(
+            {"_id": thread["_id"]},
+            {
+                "$set": {
+                    "needs_attention": True,
+                    "attention_reason": "NO_KNOWLEDGE",
+                    "updated_at": now,
+                }
+            },
+        )
         await audit.record(
             db,
-            actor="system",
-            event_type="DM_AI_FAILED",
-            payload={"thread_id": str(thread["_id"]), "error": type(exc).__name__},
+            actor="agent",
+            event_type="DM_NO_KNOWLEDGE",
+            payload={"thread_id": str(thread["_id"])},
             user_id=user_id,
         )
-        needs_human, reply = True, config["handoff_message"]
-        answer = None
-
-    if name_task is not None:
+    else:
         try:
-            await name_task
-        except Exception:
-            pass
+            answer = await answer_dm(
+                knowledge=knowledge_payload,
+                history=thread["messages"][:-len(customer_messages_to_push)],
+                message=combined_text,
+                settings=user_settings,
+            )
+            needs_human = answer.needs_human
+            input_tokens, output_tokens = answer.input_tokens, answer.output_tokens
+            reply = config["handoff_message"] if needs_human else answer.text
+        except Exception as exc:
+            log.exception("dm_ai_failed")
+            await audit.record(
+                db,
+                actor="system",
+                event_type="DM_AI_FAILED",
+                payload={"thread_id": str(thread["_id"]), "error": type(exc).__name__},
+                user_id=user_id,
+            )
+            needs_human, reply = True, config["handoff_message"]
+            answer = None
 
-    if await _send(db, container, connection, thread, reply, role="agent") and needs_human:
+    sent_ok = await _send(db, container, connection, thread, reply, role="agent")
+    _log_latency(t_webhook_start, thread["_id"])
+
+    if sent_ok and needs_human:
         escalation_doc = {
             "reason": (answer.escalation_reason if answer else None) or "REQUIRES_HUMAN",
-            "customer_message": text,
+            "customer_message": combined_text,
             "post_id": context_post_id,
             "post_title": context_post_title,
             "escalated_at": now.isoformat(),
@@ -507,6 +768,7 @@ async def _handle_messaging_locked(db, container: Container, event: dict) -> Non
             {"_id": thread["_id"]},
             {"$set": {"status": "NEEDS_HUMAN", "escalation": escalation_doc}},
         )
+
     await audit.record(
         db,
         actor="agent",
@@ -517,3 +779,9 @@ async def _handle_messaging_locked(db, container: Container, event: dict) -> Non
         },
         user_id=user_id,
     )
+
+    if name_task is not None:
+        try:
+            await name_task
+        except Exception:
+            pass

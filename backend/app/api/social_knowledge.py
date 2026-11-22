@@ -1,3 +1,4 @@
+from app.domain.workspaces import resolve_workspace_id
 """API endpoints for Dynamic Social Knowledge Engine & Hybrid RAG."""
 
 from typing import Annotated, Any
@@ -44,7 +45,7 @@ class RetrieveContextRequest(BaseModel):
 
 
 def _ws(user: dict) -> str:
-    return user.get("active_workspace_id") or "synxait"
+    return resolve_workspace_id(user=user)
 
 
 @router.post("/posts/ingest")
@@ -187,6 +188,7 @@ async def retrieve_context(
     rag = HybridRAG(db, container.settings)
     h_context = await rag.retrieve(
         workspace_id=ws_id,
+        user_id=user["_id"],
         query=body.query,
         resolved_post_id=body.resolved_post_id,
         top_k=body.top_k,

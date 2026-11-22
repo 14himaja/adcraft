@@ -7,7 +7,11 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import ContainerDep, DbDep, SettingsDep, UserDep
 from app.domain.ad_campaign import from_minor
+from app.domain.workspaces import resolve_workspace_id
 from app.errors import AppError
+from app.integrations import service as integrations_service
+from app.integrations.base.errors import InvalidOAuthState as SocialInvalidOAuthState
+from app.integrations.oauth import check_oauth_state, delete_connection, sync_meta_to_social
 from app.meta.connections import (
     disconnect_asset,
     get_connection,
@@ -47,6 +51,11 @@ async def connect(
             settings=settings,
             clock=container.clock,
         )
+        meta_conn = await get_connection(db, user["_id"])
+        if meta_conn:
+            await sync_meta_to_social(
+                db, user_id=user["_id"], organization_id=resolve_workspace_id(user=user), meta_conn=meta_conn
+            )
         return RedirectResponse(f"{SETTINGS_PAGE}?connected=1", status_code=302)
     return RedirectResponse(auth_url(settings, make_state(settings, user["_id"])), status_code=302)
 
@@ -61,6 +70,26 @@ async def callback(
     code: str | None = None,
     error: str | None = None,
 ) -> RedirectResponse:
+    # Support Instagram/Facebook OAuth initiated from the unified /integrations/{platform}/connect route
+    # when META_REDIRECT_URI points to /api/meta/callback.
+    for social_platform in ("instagram", "facebook"):
+        try:
+            check_oauth_state(settings, state, user_id=user["_id"], platform=social_platform)
+        except SocialInvalidOAuthState:
+            continue
+        redirect_url = await integrations_service.handle_oauth_callback(
+            db,
+            user,
+            social_platform,
+            state=state,
+            code=code,
+            error=error,
+            settings=settings,
+            clock=container.clock,
+            container=container,
+        )
+        return RedirectResponse(redirect_url, status_code=302)
+
     if error:
         return RedirectResponse(f"{SETTINGS_PAGE}?error=denied", status_code=302)
     check_state(settings, state, user["_id"])
@@ -76,6 +105,11 @@ async def callback(
         settings=settings,
         clock=container.clock,
     )
+    meta_conn = await get_connection(db, user["_id"])
+    if meta_conn:
+        await sync_meta_to_social(
+            db, user_id=user["_id"], organization_id=resolve_workspace_id(user=user), meta_conn=meta_conn
+        )
     return RedirectResponse(f"{SETTINGS_PAGE}?connected=1", status_code=302)
 
 
@@ -164,7 +198,12 @@ async def choose_assets(body: SelectionBody, user: UserDep, db: DbDep, container
         page=page,
         instagram=instagram,
         clock=container.clock,
+        container=container,
     )
+    if saved:
+        await sync_meta_to_social(
+            db, user_id=user["_id"], organization_id=resolve_workspace_id(user=user), meta_conn=saved
+        )
     return public_view(saved, now=container.clock.now())
 
 
@@ -177,18 +216,27 @@ async def disconnect_ad_account_route(user: UserDep, db: DbDep, container: Conta
 @router.post("/disconnect-page")
 async def disconnect_page_route(user: UserDep, db: DbDep, container: ContainerDep) -> dict:
     saved = await disconnect_asset(db, user["_id"], asset_type="page", clock=container.clock)
+    await delete_connection(
+        db, user_id=user["_id"], organization_id=resolve_workspace_id(user=user), platform="facebook", clock=container.clock
+    )
     return public_view(saved, now=container.clock.now())
 
 
 @router.post("/disconnect-instagram")
 async def disconnect_instagram_route(user: UserDep, db: DbDep, container: ContainerDep) -> dict:
     saved = await disconnect_asset(db, user["_id"], asset_type="instagram", clock=container.clock)
+    await delete_connection(
+        db, user_id=user["_id"], organization_id=resolve_workspace_id(user=user), platform="instagram", clock=container.clock
+    )
     return public_view(saved, now=container.clock.now())
 
 
 @router.post("/disconnect")
 async def disconnect(user: UserDep, db: DbDep, container: ContainerDep) -> dict:
     await db.meta_connections.delete_one({"user_id": user["_id"]})
+    org_id = resolve_workspace_id(user=user)
+    await delete_connection(db, user_id=user["_id"], organization_id=org_id, platform="facebook", clock=container.clock)
+    await delete_connection(db, user_id=user["_id"], organization_id=org_id, platform="instagram", clock=container.clock)
     return {"status": "NOT_CONNECTED"}
 
 

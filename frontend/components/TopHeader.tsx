@@ -24,9 +24,11 @@ interface TopHeaderProps {
   user?: UserProfile | null;
   onOpenAuth?: (mode: 'login' | 'register') => void;
   onOpenSettings?: () => void;
+  onOpenConnections?: () => void;
   onLogout?: () => void;
   metaConnected?: boolean;
   metaUsername?: string | null;
+  connectedCount?: number;
 }
 
 export function TopHeader({
@@ -34,9 +36,11 @@ export function TopHeader({
   user,
   onOpenAuth,
   onOpenSettings,
+  onOpenConnections,
   onLogout,
   metaConnected,
   metaUsername,
+  connectedCount,
 }: TopHeaderProps) {
   const [searchVal, setSearchVal] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
@@ -47,6 +51,7 @@ export function TopHeader({
 
   // Status notes derived from real state (no canned history).
   const [allRead, setAllRead] = useState(false);
+  const effectiveConnectedCount = connectedCount ?? (metaConnected ? 1 : 0);
   const notifications = [
     {
       id: 'delivery',
@@ -56,10 +61,10 @@ export function TopHeader({
     },
     {
       id: 'meta',
-      title: metaConnected ? 'Meta account connected' : 'Meta not connected',
-      desc: metaConnected
-        ? `Linked with Instagram ${metaUsername ? '@' + metaUsername : '(no Instagram account selected)'}.`
-        : 'Connect your Meta account in Settings to sync Instagram assets.',
+      title: effectiveConnectedCount > 0 ? `${effectiveConnectedCount} social platform${effectiveConnectedCount === 1 ? '' : 's'} connected` : 'No social accounts connected',
+      desc: effectiveConnectedCount > 0
+        ? `Manage your connected platforms${metaUsername ? ` (Instagram @${metaUsername})` : ''} in Social Connections.`
+        : 'Connect Facebook, Instagram, or LinkedIn in Social Connections.',
       type: 'meta',
     },
     ...(user ? [{ id: 'user', title: 'Signed in', desc: `Logged in as ${user.name} (${user.workspace}).`, type: 'user' }] : []),
@@ -125,24 +130,30 @@ export function TopHeader({
           )}
         </button>
 
-        {/* Meta Connection Badge */}
-        {metaConnected ? (
+        {/* Social Media Connections Status Badge */}
+        {effectiveConnectedCount > 0 ? (
           <button
             type="button"
-            onClick={onOpenSettings}
+            onClick={() => (onOpenConnections ? onOpenConnections() : onOpenSettings?.())}
+            data-testid="header-connections-btn"
             className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 text-xs font-semibold transition-all cursor-pointer shadow-xs"
           >
             <span className="w-2 h-2 rounded-full bg-emerald-500 dark:bg-emerald-400 animate-pulse" />
-            <span>Meta: {metaUsername ? `@${metaUsername}` : 'Connected'}</span>
+            <span>
+              {effectiveConnectedCount === 1 && metaUsername
+                ? `Connected: @${metaUsername}`
+                : `${effectiveConnectedCount} Social Connected`}
+            </span>
           </button>
         ) : (
           <button
             type="button"
-            onClick={onOpenSettings}
+            onClick={() => (onOpenConnections ? onOpenConnections() : onOpenSettings?.())}
+            data-testid="header-connections-btn"
             className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/80 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 border border-[#E5DDD2] dark:border-white/10 text-[#5C5047] dark:text-slate-300 text-xs font-semibold transition-all cursor-pointer shadow-2xs"
           >
             <Link2 className="w-3.5 h-3.5 text-[#9C8F85] dark:text-slate-400" />
-            <span>Connect Meta</span>
+            <span>Social Connections</span>
           </button>
         )}
 

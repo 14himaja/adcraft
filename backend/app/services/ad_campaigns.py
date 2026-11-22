@@ -248,6 +248,8 @@ async def duplicate_campaign(
 
 
 async def delete_owned(db, campaign: dict, *, container=None) -> None:
+    from app.services.social_knowledge import deactivate_campaign_knowledge
+    await deactivate_campaign_knowledge(db, campaign["_id"], clock=container.clock if container else None, status="deleted")
     if container is not None:
         from app.services.ad_lifecycle import delete_meta_objects
 

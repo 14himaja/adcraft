@@ -130,6 +130,9 @@ function Chat({
         <span className={`px-2 py-0.5 rounded-md text-xs font-bold ${thread.status === 'NEEDS_HUMAN' ? 'bg-rose-500/10 text-rose-600' : 'bg-[#FEECE7] text-[#F26D5B]'}`}>
           {STATUS_LABEL[thread.status]}
         </span>
+        {thread.needs_attention && thread.status === 'BOT' && (
+          <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-amber-500/10 text-amber-600">Needs attention</span>
+        )}
       </div>
       <ul className="flex-1 flex flex-col gap-2 px-4 py-3 overflow-y-auto max-h-[420px] text-sm">
         {allMessages.map((m, i) => {
@@ -327,7 +330,7 @@ export function DmAgentView() {
           <button type="button" className={btnSecondary} disabled={asking || !question.trim()} onClick={ask}>Ask</button>
         </div>
         {answer && (
-          <p role="status" className="text-xs text-[#1F1A18] dark:text-white">
+          <p role="status" aria-label="Agent answer" className="text-xs text-[#1F1A18] dark:text-white">
             {answer.reply}
             {answer.needs_human && <span className="ml-2 font-bold text-rose-600">(the AI would hand over to you)</span>}
           </p>
@@ -369,6 +372,7 @@ export function DmAgentView() {
                         </span>
                         <span className="flex items-center gap-1.5">
                           {t.status === 'NEEDS_HUMAN' && <span className="w-2 h-2 shrink-0 rounded-full bg-rose-500" title="Needs you" />}
+                          {t.status !== 'NEEDS_HUMAN' && t.needs_attention && <span className="w-2 h-2 shrink-0 rounded-full bg-amber-500" title="The AI had no knowledge to answer with. Add business knowledge or reply yourself." />}
                           <span className="text-xs text-[#7A6C63] dark:text-slate-400 truncate">{last?.text}</span>
                         </span>
                       </span>

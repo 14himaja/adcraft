@@ -10,6 +10,15 @@ INDEXES: dict[str, list[tuple[list[tuple[str, int]], dict]]] = {
         ([("instagram_user_id", 1)], {}),
         ([("page_id", 1)], {}),
     ],
+    "social_connections": [
+        ([("user_id", 1), ("organization_id", 1), ("platform", 1)], {"unique": True}),
+        ([("tenant_id", 1), ("platform", 1)], {}),
+        ([("platform", 1), ("status", 1)], {}),
+    ],
+    "social_publish_history": [
+        ([("user_id", 1), ("organization_id", 1), ("created_at", -1)], {}),
+        ([("tenant_id", 1), ("platform", 1)], {}),
+    ],
     "user_ai_settings": [([("user_id", 1)], {"unique": True})],
     "campaigns": [([("user_id", 1), ("status", 1)], {})],
     "campaign_versions": [([("campaign_id", 1), ("version", 1)], {"unique": True})],

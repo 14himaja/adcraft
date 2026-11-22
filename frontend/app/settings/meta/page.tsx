@@ -25,7 +25,11 @@ function SettingsMetaContent() {
             Settings
           </Link>
           <span>/</span>
-          <span className="text-[#F26D5B] font-semibold">Meta & Instagram</span>
+          <Link href="/settings/connections" className="hover:text-[#1F1A18] dark:hover:text-white transition-colors">
+            Social Connections
+          </Link>
+          <span>/</span>
+          <span className="text-[#F26D5B] font-semibold">Meta &amp; Instagram</span>
         </div>
 
         {/* Page Title */}

@@ -1,10 +1,13 @@
 """SharedPostContextResolver: Identifies the exact social post shared in a DM conversation."""
 
+import asyncio
+from datetime import timedelta
 import re
 from dataclasses import dataclass
 from typing import Literal
 
 import structlog
+from app.clock import utcnow
 from app.services.embeddings import cosine_similarity, generate_embedding
 
 log = structlog.get_logger()
@@ -30,6 +33,8 @@ class ResolvedPost:
         "exact_platform_id",
         "exact_url",
         "attachment_metadata",
+        "image_hash",
+        "visual_similarity",
         "caption_match",
         "media_reference",
         "semantic_similarity",
@@ -42,9 +47,10 @@ class ResolvedPost:
 class SharedPostContextResolver:
     """Service to resolve shared social media posts from customer messages and webhook attachments."""
 
-    def __init__(self, db, settings):
+    def __init__(self, db, settings, container=None):
         self.db = db
         self.settings = settings
+        self.container = container
 
     async def resolve(
         self,
@@ -52,6 +58,7 @@ class SharedPostContextResolver:
         workspace_id: str,
         message_text: str = "",
         attachments: list[dict] | None = None,
+        query_embedding: list[float] | None = None,
     ) -> ResolvedPost | None:
         """Resolves the shared post using strict prioritized matching."""
         attachments = attachments or []
@@ -65,8 +72,12 @@ class SharedPostContextResolver:
             if target_id:
                 post = await self.db.social_posts.find_one({
                     "workspace_id": workspace_id,
-                    "platform_post_id": str(target_id),
                     "post_status": "published",
+                    "$or": [
+                        {"platform_post_id": str(target_id)},
+                        {"ad_id": str(target_id)},
+                        {"effective_instagram_media_id": str(target_id)},
+                    ],
                 })
                 if post:
                     return self._build_resolved(post, "exact_platform_id", 1.0)
@@ -94,8 +105,12 @@ class SharedPostContextResolver:
                 extracted_id = id_match.group(1)
                 post = await self.db.social_posts.find_one({
                     "workspace_id": workspace_id,
-                    "platform_post_id": extracted_id,
                     "post_status": "published",
+                    "$or": [
+                        {"platform_post_id": extracted_id},
+                        {"ad_id": extracted_id},
+                        {"effective_instagram_media_id": extracted_id},
+                    ],
                 })
                 if post:
                     return self._build_resolved(post, "exact_platform_id", 0.98)
@@ -116,6 +131,95 @@ class SharedPostContextResolver:
                 if post:
                     return self._build_resolved(post, "attachment_metadata", 0.92)
 
+        # On DM resolve miss for attachments or exact IDs, attempt refreshing pending ad creatives with a 60s cooldown
+        if self.container is not None:
+            now_dt = self.container.clock.now() if getattr(self.container, "clock", None) else utcnow()
+            cooldown_cutoff = now_dt - timedelta(seconds=60)
+            unresolved_posts = self.db.social_posts.find({
+                "workspace_id": workspace_id,
+                "post_status": "published",
+                "effective_instagram_media_id": None,
+                "creative_id": {"$ne": None},
+                "$or": [
+                    {"last_refresh_attempt_at": None},
+                    {"last_refresh_attempt_at": {"$lt": cooldown_cutoff}},
+                ],
+            })
+            from app.meta.publisher import refresh_ad_creative
+            candidates = [p async for p in unresolved_posts.sort("created_at", -1)]
+            refreshed_any = False
+
+            if candidates:
+                # Refresh up to 2 most recent candidates inline; spawn the rest in the background
+                inline_candidates = candidates[:2]
+                background_candidates = candidates[2:]
+
+                for unres in inline_candidates:
+                    await self.db.social_posts.update_one(
+                        {"_id": unres["_id"]},
+                        {"$set": {"last_refresh_attempt_at": now_dt}}
+                    )
+                    refreshed = await refresh_ad_creative(
+                        self.db, self.container, post_id=unres["_id"], workspace_id=workspace_id
+                    )
+                    if refreshed:
+                        refreshed_any = True
+
+                for unres in background_candidates:
+                    await self.db.social_posts.update_one(
+                        {"_id": unres["_id"]},
+                        {"$set": {"last_refresh_attempt_at": now_dt}}
+                    )
+                    await self.container.spawn(
+                        refresh_ad_creative(
+                            self.db, self.container, post_id=unres["_id"], workspace_id=workspace_id
+                        )
+                    )
+
+            if refreshed_any:
+                # Re-check attachments against the newly populated media IDs
+                for att in attachments:
+                    payload = att.get("payload") or {}
+                    target_id = att.get("id") or payload.get("id") or payload.get("media_id")
+                    if target_id:
+                        post = await self.db.social_posts.find_one({
+                            "workspace_id": workspace_id,
+                            "post_status": "published",
+                            "$or": [
+                                {"platform_post_id": str(target_id)},
+                                {"ad_id": str(target_id)},
+                                {"effective_instagram_media_id": str(target_id)},
+                            ],
+                        })
+                        if post:
+                            return self._build_resolved(post, "exact_platform_id", 1.0)
+
+        # Step 3.5: Visual Image Matching (Priority 3 & 4)
+        for att in attachments:
+            att_type = str(att.get("type", "")).lower()
+            payload = att.get("payload") or {}
+            # Check if this attachment is an image or contains image data/url
+            if att_type in ("image", "photo", "share") or "image_bytes" in payload or "image_obj" in payload or payload.get("url") or payload.get("file_url"):
+                from app.services.image_matcher import extract_image_from_attachment, match_image_to_posts
+                img_obj, img_source = await extract_image_from_attachment(self.db, att)
+                if img_obj:
+                    matched_post, confidence, method, is_ambiguous, candidate_titles = await match_image_to_posts(
+                        self.db, img_obj, workspace_id
+                    )
+                    if matched_post:
+                        return ResolvedPost(
+                            post_id=str(matched_post["_id"]),
+                            platform_post_id=matched_post.get("platform_post_id", ""),
+                            post_url=matched_post.get("post_url", ""),
+                            title=matched_post.get("title", ""),
+                            caption=matched_post.get("caption", ""),
+                            summary=matched_post.get("summary", ""),
+                            match_method=method,
+                            confidence=confidence,
+                            is_ambiguous=is_ambiguous,
+                            candidate_titles=candidate_titles if is_ambiguous else None,
+                        )
+
         # If no message text and no recognized attachment, we cannot resolve
         if not query_text:
             return None
@@ -135,7 +239,7 @@ class SharedPostContextResolver:
                 return self._build_resolved(post, "caption_match", 0.88)
 
         # Step 5 & 6: Semantic similarity across indexed post records
-        return await self._semantic_match(workspace_id, query_text)
+        return await self._semantic_match(workspace_id, query_text, query_embedding=query_embedding)
 
     async def _find_by_url(self, workspace_id: str, url: str) -> dict | None:
         clean_url = url.split("?")[0].rstrip("/")
@@ -155,13 +259,20 @@ class SharedPostContextResolver:
             "post_status": "published",
             "$or": [
                 {"platform_post_id": shortcode},
+                {"ad_id": shortcode},
+                {"effective_instagram_media_id": shortcode},
                 {"post_url": {"$regex": re.escape(shortcode), "$options": "i"}},
             ],
         })
 
-    async def _semantic_match(self, workspace_id: str, query: str) -> ResolvedPost | None:
+    async def _semantic_match(
+        self, workspace_id: str, query: str, query_embedding: list[float] | None = None
+    ) -> ResolvedPost | None:
         """Finds closest active post knowledge chunk using hybrid semantic + keyword scoring."""
-        query_emb = await generate_embedding(query, self.settings)
+        if query_embedding is not None:
+            query_emb = query_embedding
+        else:
+            query_emb = await generate_embedding(query, self.settings)
         cursor = self.db.knowledge_chunks.find({
             "workspace_id": workspace_id,
             "is_active": True,

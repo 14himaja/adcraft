@@ -4,16 +4,17 @@ from contextlib import asynccontextmanager
 # Trigger reload to load updated MONGODB_URI
 from fastapi import FastAPI
 
-from app.api import auth, campaigns, dm, hashtags, media, meta_oauth, organic, social_knowledge, webhooks
+from app.api import auth, campaigns, dm, hashtags, integrations, media, meta_oauth, organic, social_knowledge, webhooks
 from app.api import settings as user_settings
 from app.api.deps import RateLimiter
 from app.config import Settings, get_settings
 from app.container import Container, build_container
 from app.db import connect, ensure_indexes
 from app.errors import install_error_handlers
-from app.meta.publisher import recover_interrupted
+from app.meta.publisher import recover_interrupted, recover_pending_creative_refreshes
 from app.observability import CorrelationIdMiddleware, configure_logging
 from app.services.insights import refresh_all_active
+from app.services.social_knowledge import reprocess_pending_or_failed_jobs
 
 
 def create_app(
@@ -31,6 +32,8 @@ def create_app(
             app.state.db = mongo[settings.mongodb_db]
             await ensure_indexes(app.state.db)
         await recover_interrupted(app.state.db, clock=app.state.container.clock)
+        await recover_pending_creative_refreshes(app.state.db, app.state.container)
+        await reprocess_pending_or_failed_jobs(app.state.db, app.state.container)
 
         async def _insights_loop():
             interval_s = max(60, settings.insights_interval_hours * 3600)
@@ -67,6 +70,7 @@ def create_app(
     app.include_router(auth.router)
     app.include_router(user_settings.router)
     app.include_router(meta_oauth.router)
+    app.include_router(integrations.router)
     app.include_router(campaigns.router)
     app.include_router(media.router)
     app.include_router(dm.router)

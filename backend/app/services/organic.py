@@ -1,3 +1,4 @@
+from app.domain.workspaces import resolve_workspace_id
 """Organic Instagram feed posts from the connected account (not ads: no spend, no campaign).
 
 Meta fetches the picture itself, so it is served from a signed public URL (PUBLIC_BASE_URL) that only
@@ -49,13 +50,14 @@ def _sig(settings: Settings, image_id: str) -> str:
     return hmac.new(key, f"public-image:{clean_id}".encode(), hashlib.sha256).hexdigest()[:32]
 
 
-def public_image_url(settings: Settings, image_id: str) -> str:
-    if not settings.public_base_url:
+def public_image_url(settings: Settings, image_id: str, mode: str = "real") -> str:
+    base = (settings.public_base_url or "").rstrip("/")
+    if not (base.startswith("https://") or (base.startswith("http://") and settings.app_env in ("development", "test", "local"))):
         raise PublishNotReady(
             "Set PUBLIC_BASE_URL to a public https address so Instagram can fetch the image"
         )
     clean_id = image_id.removesuffix(".jpg").removesuffix(".jpeg")
-    return f"{settings.public_base_url.rstrip('/')}/public/images/{clean_id}?sig={_sig(settings, clean_id)}"
+    return f"{base.rstrip('/')}/public/images/{clean_id}?sig={_sig(settings, clean_id)}"
 
 
 async def load_public_image(db, settings: Settings, image_id: str, sig: str) -> tuple[bytes, str]:
@@ -160,7 +162,7 @@ async def publish_post(
             "Posting to Instagram is switched off on this server (ALLOW_ORGANIC_PUBLISH=false)"
         )
     await image_store.owned_image(db, image_id, user_id)
-    url = public_image_url(settings, image_id)
+    url = public_image_url(settings, image_id, mode=connection.get("mode", "real"))
     _, writer = container.gateway_for(connection)
     
     # Format feed caption with selected hashtags (max 5, deduplicated, clean spacing)
@@ -185,7 +187,7 @@ async def publish_post(
         raise PostFailed(f"Instagram did not accept the post: {post['error']}")
     try:
         user = await db.users.find_one({"_id": user_id}) or {}
-        ws_id = user.get("active_workspace_id") or "synxait"
+        ws_id = resolve_workspace_id(user=user)
         from app.services import social_knowledge
         await social_knowledge.ingest_post(
             db,
@@ -219,7 +221,7 @@ async def post_campaign(db, container: Container, user_id, campaign: dict, targe
     connection = await require_connection(db, user_id, clock=container.clock)
     if connection["mode"] == "real" and not settings.allow_organic_publish:
         raise PublishNotReady("Posting is switched off on this server (ALLOW_ORGANIC_PUBLISH=false)")
-    url = public_image_url(settings, campaign["image_id"])
+    url = public_image_url(settings, campaign["image_id"], mode=connection.get("mode", "real"))
     variant = (campaign.get("variants") or [{}])[campaign.get("selected_variant", 0)]
     parts = (variant.get("headline"), variant.get("primary_text"))
     raw_caption = "\n\n".join(p for p in parts if p)[:CAPTION_MAX]
@@ -263,7 +265,7 @@ async def post_campaign(db, container: Container, user_id, campaign: dict, targe
         if results[target].get("status") == "PUBLISHED" and results[target].get("media_id"):
             try:
                 user = await db.users.find_one({"_id": user_id}) or {}
-                ws_id = campaign.get("workspace_id") or user.get("active_workspace_id") or "synxait"
+                ws_id = resolve_workspace_id(campaign=campaign, user=user)
                 from app.services import social_knowledge
                 is_story = target.endswith("story")
                 post_url = f"https://instagram.com/p/{results[target]['media_id']}" if target.startswith("instagram") and not is_story else ""
@@ -333,7 +335,7 @@ async def delete_post(db, user_id, post_id: str) -> dict:
         raise NotFound("Post not found")
     try:
         user = await db.users.find_one({"_id": user_id}) or {}
-        ws_id = user.get("active_workspace_id") or "synxait"
+        ws_id = resolve_workspace_id(user=user)
         from app.services import social_knowledge
         soc = await db.social_posts.find_one({
             "workspace_id": ws_id,

@@ -17,7 +17,8 @@ class FakeWorld:
         self.fake = fake
 
     def replay(self, method: str, path: str, body: dict, status: int = 200) -> None:
-        pass
+        if method == "GET" and isinstance(body, dict):
+            self.fake.objects[path] = dict(body)
 
     def created(self, edge: str, object_id: str) -> None:
         pass

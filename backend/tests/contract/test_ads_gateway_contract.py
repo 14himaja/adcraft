@@ -189,3 +189,16 @@ async def test_subscribe_messages_and_status(gateway, world):
     world.replay("GET", f"{page_id}/subscribed_apps", {"data": [{"subscribed_fields": ["messages"]}]})
     await gateway.subscribe_messages(page_id)
     assert await gateway.messages_subscribed(page_id) is True
+
+async def test_get_ad_creative_returns_effective_media_and_permalink(gateway, world):
+    creative_id = "120251612314120999"
+    world.replay("GET", creative_id, {
+        "id": creative_id,
+        "effective_instagram_media_id": "ig_17841416182311813_99",
+        "instagram_permalink_url": "https://instagram.com/p/test_perm",
+    })
+    res = await gateway.get_ad_creative(creative_id)
+    assert res["id"] == creative_id
+    assert res["effective_instagram_media_id"]
+    assert "instagram.com" in res["instagram_permalink_url"]
+
