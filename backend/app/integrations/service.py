@@ -358,7 +358,11 @@ async def disconnect_platform(db, user: dict, platform: str, *, settings: Settin
     if adapter.platform_id == "instagram":
         await meta_connections.disconnect_asset(db, user_id, asset_type="instagram", clock=clock)
     elif adapter.platform_id == "facebook":
-        await meta_connections.disconnect_asset(db, user_id, asset_type="page", clock=clock)
+        meta_conn = await db.meta_connections.find_one({"user_id": user_id})
+        # Meta Ads publishing reads page_id from meta_connections. While an ad account is connected, only the
+        # organic connection is hidden (tombstone) and the page stays for the ad flow.
+        if not (meta_conn and meta_conn.get("ad_account_id")):
+            await meta_connections.disconnect_asset(db, user_id, asset_type="page", clock=clock)
     return adapter.get_connection_status(None, now=clock.now(), settings=settings)
 
 

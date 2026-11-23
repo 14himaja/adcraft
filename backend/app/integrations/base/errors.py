@@ -86,6 +86,12 @@ async def with_integration_retries(
     wait=None,
     **kwargs,
 ) -> T:
+    """Retry an async platform call on transient errors only.
+
+    tenacity's AsyncRetrying is still used for the Meta SDK calls (meta/errors.py, meta/sdk_gateway.py).
+    This small loop is used by the HTTP adapters in integrations/base/http.py. `wait` accepts a number or a
+    tenacity-style callable (tests pass wait_none()), which is called with None.
+    """
     for attempt_idx in range(1, attempts + 1):
         try:
             return await fn(*args, **kwargs)

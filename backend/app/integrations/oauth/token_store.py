@@ -307,17 +307,9 @@ async def delete_connection(db, *, user_id, organization_id: str, platform: Plat
             {"$set": {"updated_at": clock.now()}},
             upsert=True,
         )
-        unset_map = {
-            "instagram": {"instagram_user_id": "", "instagram_username": ""},
-            "facebook": {"page_id": "", "page_name": ""},
-        }
-        res = await db.meta_connections.find_one_and_update(
-            {"user_id": user_id},
-            {"$unset": unset_map[platform], "$set": {"updated_at": clock.now()}},
-            return_document=ReturnDocument.AFTER,
-        )
-        if res and not (res.get("ad_account_id") or res.get("page_id") or res.get("instagram_user_id")):
-            await db.meta_connections.delete_one({"user_id": user_id})
+        # meta_connections is shared with Meta Ads publishing (it reads page_id, instagram_user_id and the
+        # token from it), so disconnecting here only hides the organic connection through the tombstone.
+        # A full Meta disconnect goes through the Meta flow (meta.connections.disconnect_asset).
     await audit.record(
         db,
         actor="user",

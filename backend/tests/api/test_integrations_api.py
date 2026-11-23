@@ -453,3 +453,57 @@ async def test_publish_client_sends_selected_target(make_client):
         assert pub.status_code == 200
         res = pub.json()["results"]["linkedin"]
         assert res["status"] == "PUBLISHED"
+
+
+async def test_facebook_disconnect_keeps_page_id_while_ad_account_is_connected(make_client, db):
+    # Meta Ads publishing reads page_id from meta_connections, so an organic disconnect must not clear it.
+    async with make_client(social_oauth_mode="fake", meta_mode="fake") as c:
+        await login(c)
+        await c.get("/integrations/facebook/connect")
+        await c.get("/integrations/instagram/connect")
+        await db.meta_connections.update_one({}, {"$set": {"ad_account_id": "act_123"}})
+        before = await db.meta_connections.find_one({})
+        assert before and before.get("page_id")
+
+        res = await c.post("/integrations/facebook/disconnect")
+        assert res.status_code == 200
+
+        after = await db.meta_connections.find_one({})
+        assert after is not None
+        assert after.get("page_id") == before["page_id"]
+        assert after.get("ad_account_id") == "act_123"
+        platforms = (await c.get("/integrations")).json()["platforms"]
+        assert next(p for p in platforms if p["platform"] == "facebook")["status"] == "NOT_CONNECTED"
+        assert next(p for p in platforms if p["platform"] == "instagram")["status"] == "ACTIVE"
+
+
+async def test_facebook_disconnect_clears_page_when_no_ad_account(make_client, db):
+    async with make_client(social_oauth_mode="fake", meta_mode="fake") as c:
+        await login(c)
+        await c.get("/integrations/facebook/connect")
+        await db.meta_connections.update_one({}, {"$unset": {"ad_account_id": ""}})
+        res = await c.post("/integrations/facebook/disconnect")
+        assert res.status_code == 200
+        after = await db.meta_connections.find_one({})
+        assert after is None or not after.get("page_id")
+
+
+async def test_publish_facebook_auth_expired_marks_meta_connection_expired(make_client, db, monkeypatch):
+    from app.integrations.base.errors import IntegrationAuthExpired
+    from app.integrations.facebook.adapter import FacebookAdapter
+
+    async def expired(*args, **kwargs):
+        raise IntegrationAuthExpired("Facebook authorization expired.", {"platform": "facebook"})
+
+    monkeypatch.setattr(FacebookAdapter, "publish", expired)
+
+    async with make_client(social_oauth_mode="fake", meta_mode="fake") as c:
+        await login(c)
+        await c.get("/integrations/facebook/connect")
+        pub = await c.post("/integrations/publish", json={"platforms": ["facebook"], "text": "Hello"})
+        assert pub.status_code == 200
+        res = pub.json()["results"]["facebook"]
+        assert res["status"] == "FAILED"
+        assert res["error_code"] == "PLATFORM_AUTH_EXPIRED"
+        meta = await db.meta_connections.find_one({})
+        assert meta["status"] == "EXPIRED"

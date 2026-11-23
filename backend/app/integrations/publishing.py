@@ -17,6 +17,7 @@ from app.integrations.base.errors import (
 from app.integrations.base.models import PlatformId, PublishContent, PublishResult
 from app.integrations.oauth import mark_connection_expired, tenant_scope
 from app.integrations.registry import get_adapter
+from app.meta.connections import mark_expired as mark_meta_expired
 from app.integrations.service import _ensure_active_token
 from app.services import image_store, organic
 
@@ -264,6 +265,10 @@ async def publish_multi_platform(
                     clock=clock,
                     error=exc.message,
                 )
+                if pid in ("facebook", "instagram"):
+                    # These connections can exist only in meta_connections (no social_connections row),
+                    # so the update above matches nothing. Expire the shared Meta token as well.
+                    await mark_meta_expired(db, user_id, clock=clock)
             result = PublishResult(
                 platform=pid,
                 status="FAILED",
