@@ -30,6 +30,15 @@ TEST_SETTINGS = Settings(
 )
 
 
+def test_linkedin_rest_headers_use_the_configured_api_version():
+    from app.integrations.linkedin.adapter import _rest_headers
+
+    assert TEST_SETTINGS.linkedin_api_version == "202611"
+    assert _rest_headers("tok", TEST_SETTINGS)["LinkedIn-Version"] == "202611"
+    pinned = TEST_SETTINGS.model_copy(update={"linkedin_api_version": "202701"})
+    assert _rest_headers("tok", pinned)["LinkedIn-Version"] == "202701"
+
+
 def test_registry_returns_all_three_platforms_in_order():
     ids = [a.platform_id for a in list_adapters()]
     assert ids == ["facebook", "instagram", "linkedin"]

@@ -34,14 +34,15 @@ LINKEDIN_ORG_ACLS_URL = "https://api.linkedin.com/rest/organizationAcls"
 LINKEDIN_ORG_URL = "https://api.linkedin.com/rest/organizations/{org_id}"
 LINKEDIN_POSTS_URL = "https://api.linkedin.com/rest/posts"
 LINKEDIN_IMAGES_INIT_URL = "https://api.linkedin.com/rest/images?action=initializeUpload"
-LINKEDIN_API_VERSION = "202501"
 LINKEDIN_TEXT_MAX = 3000
 
 
-def _rest_headers(access_token: str) -> dict[str, str]:
+def _rest_headers(access_token: str, settings: Settings) -> dict[str, str]:
+    # LinkedIn retires each API version after about 12 months (a retired one answers 426 NONEXISTENT_VERSION),
+    # so the version is a setting (LINKEDIN_API_VERSION) and not a constant.
     return {
         "Authorization": f"Bearer {access_token}",
-        "LinkedIn-Version": LINKEDIN_API_VERSION,
+        "LinkedIn-Version": settings.linkedin_api_version,
         "X-Restli-Protocol-Version": "2.0.0",
         "Content-Type": "application/json",
     }
@@ -222,7 +223,7 @@ class LinkedInAdapter(SocialPlatformAdapter):
                 "GET",
                 LINKEDIN_ORG_ACLS_URL,
                 params={"q": "roleAssignee", "role": "ADMINISTRATOR", "state": "APPROVED"},
-                headers=_rest_headers(access_token),
+                headers=_rest_headers(access_token, settings),
             )
             for elem in acl_body.get("elements", []):
                 org_urn = elem.get("organization") or elem.get("organizationalTarget")
@@ -236,7 +237,7 @@ class LinkedInAdapter(SocialPlatformAdapter):
                         "linkedin",
                         "GET",
                         LINKEDIN_ORG_URL.format(org_id=org_id),
-                        headers=_rest_headers(access_token),
+                        headers=_rest_headers(access_token, settings),
                     )
                     org_name = org_detail.get("localizedName") or org_detail.get("name") or org_name
                     vanity = org_detail.get("vanityName")
@@ -391,7 +392,7 @@ class LinkedInAdapter(SocialPlatformAdapter):
             extra_link = f"\n\n{content.link_url}"
             commentary = (commentary[: LINKEDIN_TEXT_MAX - len(extra_link)] + extra_link) if len(commentary) + len(extra_link) > LINKEDIN_TEXT_MAX else (commentary + extra_link)
 
-        headers = _rest_headers(access_token)
+        headers = _rest_headers(access_token, settings)
         payload: dict = {
             "author": str(target),
             "commentary": commentary,

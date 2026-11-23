@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     linkedin_client_secret: str = ""
     linkedin_redirect_uri: str = "http://localhost:3000/api/integrations/linkedin/callback"
     linkedin_scopes: str = "openid,profile,w_member_social"
+    # LinkedIn REST API version (YYYYMM). LinkedIn retires versions after about 12 months, so keep this current.
+    linkedin_api_version: str = "202611"
     x_client_id: str = ""
     x_client_secret: str = ""
     x_redirect_uri: str = "http://localhost:3000/api/integrations/x/callback"
