@@ -37,6 +37,7 @@ export type SocialConnectionStatus =
   | "ACTIVE"
   | "EXPIRED"
   | "REVOKED"
+  | "REQUIRES_REAUTH"
   | "ERROR";
 
 export type PlatformCapabilities = {
@@ -167,7 +168,7 @@ export type PublishHistoryItem = {
   hashtags: string[];
   target_id?: string | null;
   target_name?: string | null;
-  status: "PUBLISHED" | "FAILED";
+  status: "PUBLISHED" | "FAILED" | "SCHEDULED";
   platform_post_id?: string | null;
   post_url?: string | null;
   error?: string | null;
