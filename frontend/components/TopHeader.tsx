@@ -63,8 +63,8 @@ export function TopHeader({
       id: 'meta',
       title: effectiveConnectedCount > 0 ? `${effectiveConnectedCount} social platform${effectiveConnectedCount === 1 ? '' : 's'} connected` : 'No social accounts connected',
       desc: effectiveConnectedCount > 0
-        ? `Manage your connected platforms${metaUsername ? ` (Instagram @${metaUsername})` : ''} in Social Connections.`
-        : 'Connect Facebook, Instagram, or LinkedIn in Social Connections.',
+        ? `Manage your connected platforms${metaUsername ? ` (Instagram @${metaUsername})` : ''} in Social Accounts.`
+        : 'Connect Facebook, Instagram, or LinkedIn in Social Accounts.',
       type: 'meta',
     },
     ...(user ? [{ id: 'user', title: 'Signed in', desc: `Logged in as ${user.name} (${user.workspace}).`, type: 'user' }] : []),

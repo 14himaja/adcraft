@@ -45,11 +45,16 @@ export type PlatformCapabilities = {
   supports_account_selection: boolean;
   supports_text_post: boolean;
   supports_image_post: boolean;
+  supports_video_post?: boolean;
   supports_link_post: boolean;
   supports_title: boolean;
+  supports_scheduling?: boolean;
   requires_image: boolean;
   requires_target_selection: boolean;
   max_text_length: number;
+  supported_media_types?: string[];
+  max_image_size_mb?: number;
+  max_video_size_mb?: number;
   target_label: string;
 };
 
@@ -121,6 +126,7 @@ export type MultiPublishPayload = {
   image_id?: string;
   hashtags?: string[];
   targets?: Record<string, string>;
+  scheduled_at?: string;
 };
 
 export type MultiPublishPreviewItem = {
@@ -132,17 +138,21 @@ export type MultiPublishPreviewItem = {
   formatted_text: string;
   character_count: number;
   max_text_length: number;
+  supports_scheduling?: boolean;
+  scheduled_at?: string | null;
   valid: boolean;
   errors: string[];
 };
 
 export type MultiPublishResultItem = {
   platform: SocialPlatformId;
-  status: "PUBLISHED" | "FAILED";
+  status: "PUBLISHED" | "FAILED" | "SCHEDULED";
   platform_post_id?: string | null;
   post_url?: string | null;
   target_id?: string | null;
   target_name?: string | null;
+  scheduled?: boolean;
+  scheduled_at?: string | null;
   error?: string | null;
   error_code?: string | null;
 };

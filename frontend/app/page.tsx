@@ -234,17 +234,6 @@ export default function Home() {
               <div className="inline-flex p-1 rounded-2xl bg-white dark:bg-[#111827] border border-[#EDE6DD] dark:border-white/10 text-xs font-bold">
                 <button
                   type="button"
-                  onClick={() => setPublishMode('instagram')}
-                  className={`px-4 py-2 rounded-xl transition-colors cursor-pointer ${
-                    publishMode === 'instagram'
-                      ? 'bg-[#F26D5B] text-white shadow-xs'
-                      : 'text-[#7A6C63] dark:text-slate-400 hover:text-[#1F1A18] dark:hover:text-white'
-                  }`}
-                >
-                  Post to Instagram
-                </button>
-                <button
-                  type="button"
                   onClick={() => setPublishMode('multi')}
                   className={`px-4 py-2 rounded-xl transition-colors cursor-pointer ${
                     publishMode === 'multi'
@@ -252,7 +241,18 @@ export default function Home() {
                       : 'text-[#7A6C63] dark:text-slate-400 hover:text-[#1F1A18] dark:hover:text-white'
                   }`}
                 >
-                  Multi-Platform Publisher
+                  Publish Posts (Unified Multi-Platform)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPublishMode('instagram')}
+                  className={`px-4 py-2 rounded-xl transition-colors cursor-pointer ${
+                    publishMode === 'instagram'
+                      ? 'bg-[#F26D5B] text-white shadow-xs'
+                      : 'text-[#7A6C63] dark:text-slate-400 hover:text-[#1F1A18] dark:hover:text-white'
+                  }`}
+                >
+                  Instagram Direct (Single)
                 </button>
               </div>
               {publishMode === 'instagram' ? (

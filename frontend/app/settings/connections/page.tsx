@@ -21,7 +21,7 @@ function ConnectionsPageContent() {
             Settings
           </Link>
           <span>/</span>
-          <span className="text-[#F26D5B] font-semibold">Social Media Connections</span>
+          <span className="text-[#F26D5B] font-semibold">Social Accounts</span>
         </div>
 
         <SocialMediaConnections

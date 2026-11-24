@@ -19,11 +19,16 @@ class PlatformCapabilities:
     supports_account_selection: bool = False
     supports_text_post: bool = True
     supports_image_post: bool = False
+    supports_video_post: bool = False
     supports_link_post: bool = False
     supports_title: bool = False
+    supports_scheduling: bool = False
     requires_image: bool = False
     requires_target_selection: bool = False
     max_text_length: int = 2000
+    supported_media_types: tuple[str, ...] = ("image/jpeg", "image/png")
+    max_image_size_mb: int = 8
+    max_video_size_mb: int = 100
     target_label: str = "Account"
 
 
@@ -94,6 +99,7 @@ class PublishContent:
     target_id: str | None = None
     target_name: str | None = None
     media_type: str = "TEXT"
+    scheduled_at: datetime | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -107,6 +113,8 @@ class PublishResult:
     target_name: str | None = None
     error: str | None = None
     error_code: str | None = None
+    scheduled: bool = False
+    scheduled_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -118,5 +126,7 @@ class PublishResult:
             "target_name": self.target_name,
             "error": self.error,
             "error_code": self.error_code,
+            "scheduled": self.scheduled,
+            "scheduled_at": self.scheduled_at,
         }
 

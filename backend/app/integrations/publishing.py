@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Any
 
 from bson import ObjectId
@@ -60,12 +61,25 @@ async def preview_multi_publish(
     image_id: str | None,
     hashtags: list[str],
     targets: dict[str, str],
+    scheduled_at: str | datetime | None = None,
     settings: Settings,
     clock,
 ) -> dict[str, Any]:
     user_id, org_id, _ = tenant_scope(user)
     valid_tags, tag_errors = validate_hashtag_list(hashtags or [])
     previews: dict[str, Any] = {}
+
+    parsed_scheduled_at: datetime | None = None
+    if scheduled_at:
+        try:
+            if isinstance(scheduled_at, str):
+                parsed_scheduled_at = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+            elif isinstance(scheduled_at, datetime):
+                parsed_scheduled_at = scheduled_at
+            if parsed_scheduled_at and parsed_scheduled_at.tzinfo is None:
+                parsed_scheduled_at = parsed_scheduled_at.replace(tzinfo=UTC)
+        except Exception:
+            parsed_scheduled_at = None
 
     for pid in dict.fromkeys(platforms):
         adapter = get_adapter(pid)
@@ -74,6 +88,13 @@ async def preview_multi_publish(
         conn_status = "NOT_CONNECTED"
         target_id = targets.get(pid)
         target_name = None
+
+        if parsed_scheduled_at is not None:
+            if not defn.capabilities.supports_scheduling:
+                errors.append(f"{defn.name} does not support scheduled posts.")
+            elif parsed_scheduled_at <= clock.now():
+                errors.append("Scheduled time must be in the future.")
+
         try:
             conn, _ = await _ensure_active_token(db, user_id, org_id, pid, settings=settings, clock=clock)
             conn_status = conn.get("status", "ACTIVE")
@@ -87,6 +108,7 @@ async def preview_multi_publish(
                 hashtags=valid_tags,
                 target_id=target_id,
                 target_name=target_name,
+                scheduled_at=parsed_scheduled_at,
             )
             errors.extend(adapter.validate_publish(content, conn))
         except (IntegrationNotConnected, IntegrationAuthExpired) as exc:
@@ -105,6 +127,8 @@ async def preview_multi_publish(
             "formatted_text": formatted_text,
             "character_count": len(formatted_text),
             "max_text_length": defn.capabilities.max_text_length,
+            "supports_scheduling": defn.capabilities.supports_scheduling,
+            "scheduled_at": parsed_scheduled_at.isoformat() if parsed_scheduled_at else None,
             "valid": len(errors) == 0,
             "errors": errors,
         }
@@ -123,6 +147,7 @@ async def publish_multi_platform(
     image_id: str | None,
     hashtags: list[str],
     targets: dict[str, str],
+    scheduled_at: str | datetime | None = None,
     settings: Settings,
     clock,
     container=None,
@@ -131,6 +156,18 @@ async def publish_multi_platform(
     valid_tags, _ = validate_hashtag_list(hashtags or [])
     image_url, image_bytes, image_ct = await _load_image_payload(db, settings, user_id, image_id)
     now = clock.now()
+
+    parsed_scheduled_at: datetime | None = None
+    if scheduled_at:
+        try:
+            if isinstance(scheduled_at, str):
+                parsed_scheduled_at = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+            elif isinstance(scheduled_at, datetime):
+                parsed_scheduled_at = scheduled_at
+            if parsed_scheduled_at and parsed_scheduled_at.tzinfo is None:
+                parsed_scheduled_at = parsed_scheduled_at.replace(tzinfo=UTC)
+        except Exception:
+            parsed_scheduled_at = None
 
     results: dict[str, dict[str, Any]] = {}
     for pid in dict.fromkeys(platforms):
@@ -145,7 +182,15 @@ async def publish_multi_platform(
             allowed = {t for t in (selected_target_id, platform_account_id) if t}
             client_target = targets.get(pid)
 
-            if not allowed:
+            client_target_matched = None
+            if client_target and client_target not in allowed:
+                try:
+                    disc = await adapter.get_accounts(access_token, settings, connection=conn, container=container)
+                    client_target_matched = next((a for a in disc if (a.target_id or a.account_id) == client_target or a.account_id == client_target), None)
+                except Exception:
+                    client_target_matched = None
+
+            if not allowed and not client_target_matched:
                 result = PublishResult(
                     platform=pid,
                     status="FAILED",
@@ -154,7 +199,7 @@ async def publish_multi_platform(
                     error=f"No account or destination selected for {pid}.",
                     error_code="NO_TARGET_SELECTED",
                 )
-            elif client_target and client_target not in allowed:
+            elif client_target and client_target not in allowed and not client_target_matched:
                 result = PublishResult(
                     platform=pid,
                     status="FAILED",
@@ -165,9 +210,17 @@ async def publish_multi_platform(
                 )
             else:
                 target_id = client_target or selected_target_id or platform_account_id
-                target_name = conn.get("selected_target_name") or conn.get("account_display_name")
+                target_name = (client_target_matched.target_name or client_target_matched.display_name) if client_target_matched else (conn.get("selected_target_name") or conn.get("account_display_name"))
                 if conn.get("mode") == "fake" and image_id and not image_url:
                     image_url = f"https://fake.adcraft.local/public/images/{image_id}"
+
+                defn = adapter.definition(settings)
+                sched_errors = []
+                if parsed_scheduled_at is not None:
+                    if not defn.capabilities.supports_scheduling:
+                        sched_errors.append(f"{defn.name} does not support scheduled posts.")
+                    elif parsed_scheduled_at <= clock.now():
+                        sched_errors.append("Scheduled time must be in the future.")
 
                 content = PublishContent(
                     text=text,
@@ -181,8 +234,9 @@ async def publish_multi_platform(
                     target_id=target_id,
                     target_name=target_name,
                     media_type="IMAGE" if image_id else ("LINK" if link_url else "TEXT"),
+                    scheduled_at=parsed_scheduled_at,
                 )
-                validation_errors = adapter.validate_publish(content, conn)
+                validation_errors = list(sched_errors) + adapter.validate_publish(content, conn)
                 if validation_errors:
                     result = PublishResult(
                         platform=pid,
@@ -196,6 +250,9 @@ async def publish_multi_platform(
                     result = await adapter.publish(
                         access_token, content, conn, settings, container=container
                     )
+                    if result.status == "PUBLISHED" and parsed_scheduled_at:
+                        result.scheduled = True
+                        result.scheduled_at = parsed_scheduled_at.isoformat()
         except (IntegrationNotConnected, IntegrationAuthExpired) as exc:
             if isinstance(exc, IntegrationAuthExpired):
                 log.warning("publish_token_expired", platform=pid, user_id=user_id)
@@ -237,7 +294,8 @@ async def publish_multi_platform(
                 "hashtags": valid_tags,
                 "target_id": result.target_id,
                 "target_name": result.target_name,
-                "status": result.status,
+                "status": "SCHEDULED" if (result.status == "PUBLISHED" and parsed_scheduled_at) else result.status,
+                "scheduled_at": parsed_scheduled_at.isoformat() if parsed_scheduled_at else None,
                 "platform_post_id": result.platform_post_id,
                 "post_url": result.post_url,
                 "error": result.error,

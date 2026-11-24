@@ -20,13 +20,14 @@ class SelectAccountBody(BaseModel):
 
 
 class PublishPreviewBody(BaseModel):
-    platforms: list[PlatformId] = Field(min_length=1, max_length=3)
+    platforms: list[PlatformId] = Field(min_length=1, max_length=10)
     text: Annotated[str, StringConstraints(max_length=65000)] = ""
     title: Annotated[str, StringConstraints(strip_whitespace=True, max_length=300)] | None = None
     link_url: Annotated[str, StringConstraints(strip_whitespace=True, max_length=2048)] | None = None
     image_id: str | None = Field(default=None, max_length=64)
     hashtags: list[str] = Field(default_factory=list, max_length=10)
     targets: dict[str, str] = Field(default_factory=dict)
+    scheduled_at: str | None = None
 
 
 @router.get("")
@@ -53,6 +54,7 @@ async def preview_publish(
         image_id=body.image_id,
         hashtags=body.hashtags,
         targets=body.targets,
+        scheduled_at=body.scheduled_at,
         settings=settings,
         clock=container.clock,
     )
@@ -72,6 +74,7 @@ async def multi_publish(
         image_id=body.image_id,
         hashtags=body.hashtags,
         targets=body.targets,
+        scheduled_at=body.scheduled_at,
         settings=settings,
         clock=container.clock,
         container=container,

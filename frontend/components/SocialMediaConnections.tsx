@@ -6,7 +6,11 @@ import {
   AlertTriangle,
   Check,
   CheckCircle2,
+  Clock,
   ExternalLink,
+  Film,
+  Image as ImageIcon,
+  Link2,
   Loader2,
   Lock,
   RefreshCw,
@@ -47,17 +51,17 @@ const DEFAULT_CARDS: { id: SocialPlatformId; name: string; description: string }
   {
     id: 'facebook',
     name: 'Facebook',
-    description: 'Connect Facebook Pages for organic Page posts, media, and Meta business management.',
+    description: 'Connect Facebook Pages for organic Page posts, photos, videos, and Meta business management.',
   },
   {
     id: 'instagram',
     name: 'Instagram',
-    description: 'Publish feed photos and manage Instagram Business & Creator accounts via Meta.',
+    description: 'Publish feed photos and videos, and manage Instagram Business & Creator accounts via Meta.',
   },
   {
     id: 'linkedin',
     name: 'LinkedIn',
-    description: 'Connect LinkedIn Organization Pages and profiles for text and image publishing.',
+    description: 'Connect LinkedIn Organization Pages and personal profiles for professional content and updates.',
   },
 ];
 
@@ -76,10 +80,22 @@ function StatusBadge({ platform }: { platform: SocialPlatformConnection }) {
   if (platform.status === 'EXPIRED') {
     return (
       <span
-        className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-500/30"
+        className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-500/30"
         data-testid={`status-${platform.platform}`}
       >
+        <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
         Expired
+      </span>
+    );
+  }
+  if (platform.status === 'REQUIRES_REAUTH') {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-500/30"
+        data-testid={`status-${platform.platform}`}
+      >
+        <AlertCircle className="w-3 h-3 text-rose-600 dark:text-rose-400" />
+        Requires Reauthorization
       </span>
     );
   }
@@ -172,7 +188,7 @@ function ManageAccountModal({
             type="button"
             onClick={onClose}
             aria-label="Close manage account"
-            className="w-8 h-8 rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center cursor-pointer"
+            className="w-8 h-8 rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center cursor-pointer transition-colors"
           >
             <CloseIcon className="w-4 h-4" />
           </button>
@@ -393,7 +409,9 @@ export function SocialMediaConnections({
         supports_image_post: true,
         supports_link_post: false,
         supports_title: false,
-        requires_image: false,
+        supports_video_post: true,
+        supports_scheduling: d.id !== 'linkedin',
+        requires_image: d.id === 'instagram',
         requires_target_selection: true,
         max_text_length: 2000,
         target_label: 'Account',
@@ -448,8 +466,11 @@ export function SocialMediaConnections({
           <div>
             <div className="flex flex-wrap items-center gap-2.5">
               <h2 className="text-xl sm:text-2xl font-extrabold text-[#1F1A18] dark:text-white tracking-tight">
-                Social Media Connections
+                Social Accounts
               </h2>
+              <span className="text-xs text-[#7A6C63] dark:text-slate-400 font-medium">
+                Social Media Connections
+              </span>
               <span
                 className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#FEECE7] dark:bg-[#F26D5B]/15 text-[#F26D5B] border border-[#FAD6CD] dark:border-[#F26D5B]/30"
                 data-testid="connected-count-badge"
@@ -458,7 +479,7 @@ export function SocialMediaConnections({
               </span>
             </div>
             <p className="text-xs sm:text-sm text-[#7A6C63] dark:text-slate-400 mt-1">
-              Connect and manage all your social media accounts from one place.
+              Connect and manage all your multi-platform social media accounts and publishing destinations from one unified dashboard.
             </p>
           </div>
 
@@ -513,6 +534,10 @@ export function SocialMediaConnections({
                     ? `${queryPlatform ? queryPlatform.toUpperCase() : 'Platform'} authorization was cancelled.`
                     : queryError === 'not_configured'
                     ? `${queryPlatform ? queryPlatform.toUpperCase() : 'Platform'} OAuth credentials are not configured.`
+                    : queryError === 'token_expired'
+                    ? `${queryPlatform ? queryPlatform.toUpperCase() : 'Platform'} token has expired. Please reconnect.`
+                    : queryError === 'invalid_scope'
+                    ? `${queryPlatform ? queryPlatform.toUpperCase() : 'Platform'} required permissions were not granted.`
                     : 'Connection could not be completed.'}
                 </p>
                 {queryError === 'not_configured' && queryPlatform && (
@@ -523,6 +548,11 @@ export function SocialMediaConnections({
                         `${queryPlatform.toUpperCase()}_CLIENT_ID`}
                     </code>{' '}
                     in your backend <code className="font-mono">.env</code> file to enable OAuth login.
+                  </p>
+                )}
+                {queryError === 'denied' && (
+                  <p className="mt-1 opacity-90 text-[11px]">
+                    Ensure you grant the requested permissions when prompted on the {queryPlatform ? queryPlatform : 'provider'} authorization screen.
                   </p>
                 )}
               </div>
@@ -559,13 +589,14 @@ export function SocialMediaConnections({
         </div>
       </div>
 
-      {/* 6 Platform Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4" data-testid="platform-cards-grid">
+      {/* Platform Cards Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="platform-cards-grid">
         {cards.map((p) => {
           const isConnecting = connectingId === p.platform;
           const isDisconnecting = disconnectingId === p.platform;
           const isConnected = p.status === 'ACTIVE';
           const isExpired = p.status === 'EXPIRED';
+          const isReauth = p.status === 'REQUIRES_REAUTH';
 
           return (
             <div
@@ -573,9 +604,9 @@ export function SocialMediaConnections({
               data-testid={`platform-card-${p.platform}`}
               className={`rounded-2xl p-5 bg-white dark:bg-[#111827] border transition-all flex flex-col justify-between gap-4 shadow-2xs ${
                 isConnected
-                  ? 'border-emerald-500/35 dark:border-emerald-500/30'
-                  : isExpired
-                  ? 'border-amber-500/40'
+                  ? 'border-emerald-500/35 dark:border-emerald-500/30 ring-1 ring-emerald-500/10'
+                  : isExpired || isReauth
+                  ? 'border-amber-500/40 ring-1 ring-amber-500/10'
                   : 'border-[#EDE6DD] dark:border-white/10 hover:border-[#F26D5B]/40'
               }`}
             >
@@ -602,8 +633,41 @@ export function SocialMediaConnections({
                   </div>
                 </div>
 
+                {/* Dynamic Capabilities Badges */}
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {p.capabilities?.supports_text_post && (
+                    <span className="inline-flex items-center text-[10px] font-semibold px-2 py-0.5 rounded-md bg-black/5 dark:bg-white/5 text-[#5C5047] dark:text-slate-300 border border-black/5 dark:border-white/10">
+                      Text (max {p.capabilities.max_text_length > 10000 ? `${Math.round(p.capabilities.max_text_length / 1000)}k` : p.capabilities.max_text_length})
+                    </span>
+                  )}
+                  {p.capabilities?.supports_image_post && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-black/5 dark:bg-white/5 text-[#5C5047] dark:text-slate-300 border border-black/5 dark:border-white/10">
+                      <ImageIcon className="w-2.5 h-2.5 text-[#F26D5B]" />
+                      {p.capabilities.requires_image ? 'Image (Req)' : 'Image'}
+                    </span>
+                  )}
+                  {p.capabilities?.supports_video_post && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-black/5 dark:bg-white/5 text-[#5C5047] dark:text-slate-300 border border-black/5 dark:border-white/10">
+                      <Film className="w-2.5 h-2.5 text-blue-500" />
+                      Video
+                    </span>
+                  )}
+                  {p.capabilities?.supports_link_post && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-black/5 dark:bg-white/5 text-[#5C5047] dark:text-slate-300 border border-black/5 dark:border-white/10">
+                      <Link2 className="w-2.5 h-2.5 text-indigo-500" />
+                      Links
+                    </span>
+                  )}
+                  {p.capabilities?.supports_scheduling && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
+                      <Clock className="w-2.5 h-2.5" />
+                      Scheduling
+                    </span>
+                  )}
+                </div>
+
                 {/* Connected account details */}
-                {(isConnected || isExpired) && (
+                {(isConnected || isExpired || isReauth) && (
                   <div className="p-3 rounded-xl bg-[#FAF8F5] dark:bg-[#0B1120] border border-[#EDE6DD] dark:border-white/10 text-xs space-y-1">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-bold text-[#1F1A18] dark:text-white truncate">
@@ -617,7 +681,12 @@ export function SocialMediaConnections({
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center justify-between text-[11px] text-[#7A6C63] dark:text-slate-400">
+                    {p.selected_target_id && (
+                      <p className="text-[10px] font-mono text-[#7A6C63] dark:text-slate-400 truncate">
+                        ID: {p.selected_target_id}
+                      </p>
+                    )}
+                    <div className="flex items-center justify-between text-[11px] text-[#7A6C63] dark:text-slate-400 pt-0.5">
                       <span>
                         {p.expires_at
                           ? `Expires ${new Date(p.expires_at).toLocaleDateString()}`
@@ -636,7 +705,7 @@ export function SocialMediaConnections({
 
               {/* Card Action Buttons */}
               <div className="flex items-center gap-2 pt-1">
-                {!isConnected && !isExpired && (
+                {!isConnected && !isExpired && !isReauth && (
                   <button
                     type="button"
                     onClick={() => handleConnect(p.platform)}
@@ -658,7 +727,7 @@ export function SocialMediaConnections({
                   </button>
                 )}
 
-                {isExpired && (
+                {(isExpired || isReauth) && (
                   <>
                     <button
                       type="button"
@@ -716,7 +785,7 @@ export function SocialMediaConnections({
         })}
       </div>
 
-      {/* Future Phase: Paid Advertising Integrations Separation Notice */}
+      {/* Paid Advertising Integrations Notice */}
       {!compact && adPlatforms.length > 0 && (
         <div className="rounded-3xl bg-white dark:bg-[#111827] border border-[#EDE6DD] dark:border-white/10 p-5 shadow-2xs">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">

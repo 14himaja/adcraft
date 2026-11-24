@@ -111,9 +111,7 @@ async def test_retry_helper_retries_only_transient_errors():
             raise IntegrationApiError("upstream 503", platform="linkedin", http_status=503, retryable=True)
         return "ok"
 
-    from tenacity import wait_none
-
-    assert await with_integration_retries(flaky, attempts=3, wait=wait_none()) == "ok"
+    assert await with_integration_retries(flaky, attempts=3, wait=0) == "ok"
     assert calls == 3
 
     auth_calls = 0
@@ -124,7 +122,7 @@ async def test_retry_helper_retries_only_transient_errors():
         raise IntegrationAuthExpired("expired")
 
     with pytest.raises(IntegrationAuthExpired):
-        await with_integration_retries(auth_fail, attempts=3, wait=wait_none())
+        await with_integration_retries(auth_fail, attempts=3, wait=0)
     assert auth_calls == 1
 
     perm_calls = 0
@@ -135,5 +133,6 @@ async def test_retry_helper_retries_only_transient_errors():
         raise IntegrationPermissionDenied("denied")
 
     with pytest.raises(IntegrationPermissionDenied):
-        await with_integration_retries(perm_fail, attempts=3, wait=wait_none())
+        await with_integration_retries(perm_fail, attempts=3, wait=0)
+    assert perm_calls == 1
     assert perm_calls == 1

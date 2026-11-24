@@ -58,15 +58,20 @@ class LinkedInAdapter(SocialPlatformAdapter):
             description="Connect LinkedIn Organization Pages and profiles for text and image publishing.",
             capabilities=PlatformCapabilities(
                 supports_oauth=True,
-                supports_refresh=False,
+                supports_refresh=True,
                 supports_account_selection=True,
                 supports_text_post=True,
                 supports_image_post=True,
+                supports_video_post=False,
                 supports_link_post=True,
-                supports_title=False,
+                supports_title=True,
+                supports_scheduling=False,
                 requires_image=False,
                 requires_target_selection=True,
                 max_text_length=LINKEDIN_TEXT_MAX,
+                supported_media_types=("image/jpeg", "image/png"),
+                max_image_size_mb=8,
+                max_video_size_mb=0,
                 target_label="LinkedIn Organization Page or Profile",
             ),
             required_env_vars=("LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET", "LINKEDIN_REDIRECT_URI"),
@@ -235,7 +240,7 @@ class LinkedInAdapter(SocialPlatformAdapter):
                     )
                     org_name = org_detail.get("localizedName") or org_detail.get("name") or org_name
                     vanity = org_detail.get("vanityName")
-                except IntegrationPermissionDenied:
+                except (IntegrationPermissionDenied, IntegrationApiError):
                     pass
                 accounts.append(
                     DiscoveredAccount(
@@ -315,16 +320,25 @@ class LinkedInAdapter(SocialPlatformAdapter):
             errors.append("Select a LinkedIn Organization Page or Personal Profile before publishing.")
         granted = set(connection.get("scopes") or [])
         is_fake = (connection or {}).get("mode") == "fake"
-        if not is_fake and target and str(target).startswith("urn:li:organization:") and granted and "w_organization_social" not in granted:
-            errors.append(
-                "LinkedIn Organization Page publishing requires the w_organization_social permission and Page admin role."
-            )
+        if not is_fake and target:
+            if str(target).startswith("urn:li:organization:") and granted and "w_organization_social" not in granted:
+                errors.append(
+                    "LinkedIn Organization Page publishing requires the w_organization_social permission and Page admin role."
+                )
+            elif str(target).startswith("urn:li:person:") and granted and "w_member_social" not in granted:
+                errors.append(
+                    "LinkedIn personal profile publishing requires the w_member_social permission."
+                )
+        if content.scheduled_at:
+            errors.append("LinkedIn API does not support scheduled posts. Please publish now or remove scheduling.")
         valid_tags, _ = validate_hashtag_list(content.hashtags or [])
         formatted = format_caption_with_hashtags(content.text or "", valid_tags)
         if not formatted.strip():
             errors.append("LinkedIn post requires text commentary.")
         if len(formatted) > LINKEDIN_TEXT_MAX:
             errors.append(f"LinkedIn post exceeds {LINKEDIN_TEXT_MAX} characters.")
+        if content.title and len(content.title) > 400:
+            errors.append("LinkedIn title cannot exceed 400 characters.")
         return errors
 
     async def publish(
@@ -347,13 +361,33 @@ class LinkedInAdapter(SocialPlatformAdapter):
                 platform="linkedin",
                 status="PUBLISHED",
                 platform_post_id=f"urn:li:share:fake_{fake_id}",
-                post_url="https://www.linkedin.com/feed/update/urn:li:share:fake",
+                post_url=f"https://www.linkedin.com/feed/update/urn:li:share:fake_{fake_id}",
                 target_id=target,
                 target_name=target_name,
             )
 
+        # Normalize target ID to URN format if plain numeric ID provided
+        if target and not str(target).startswith("urn:li:"):
+            if connection.get("account_type") == "organization" or connection.get("selected_target_type") == "linkedin_organization":
+                target = f"urn:li:organization:{target}"
+            else:
+                target = f"urn:li:person:{target}"
+
+        # Resolve image bytes: either from content.image_bytes or download from content.image_url
+        image_bytes = content.image_bytes
+        image_content_type = content.image_content_type or "image/jpeg"
+        if not image_bytes and content.image_url and str(content.image_url).startswith(("http://", "https://")):
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as dl_client:
+                    dl_resp = await dl_client.get(content.image_url)
+                    if dl_resp.status_code == 200:
+                        image_bytes = dl_resp.content
+                        image_content_type = dl_resp.headers.get("Content-Type") or image_content_type
+            except Exception as dl_err:
+                log.warning("linkedin_image_download_failed", error=str(dl_err))
+
         # If both image and link URL are provided, include the link in commentary (M-3)
-        if content.image_bytes and content.link_url and content.link_url not in commentary:
+        if image_bytes and content.link_url and content.link_url not in commentary:
             extra_link = f"\n\n{content.link_url}"
             commentary = (commentary[: LINKEDIN_TEXT_MAX - len(extra_link)] + extra_link) if len(commentary) + len(extra_link) > LINKEDIN_TEXT_MAX else (commentary + extra_link)
 
@@ -372,7 +406,7 @@ class LinkedInAdapter(SocialPlatformAdapter):
         }
 
         try:
-            if content.image_bytes:
+            if image_bytes:
                 init_body = await platform_request(
                     "linkedin",
                     "POST",
@@ -383,14 +417,17 @@ class LinkedInAdapter(SocialPlatformAdapter):
                 value = init_body.get("value") or {}
                 upload_url = value["uploadUrl"]
                 image_urn = value["image"]
+
+                upload_headers = {"Content-Type": image_content_type}
+                # Pre-signed S3 URLs reject requests that include both URL signature query params and Authorization header
+                if "X-Amz-Signature" not in upload_url and "Signature=" not in upload_url:
+                    upload_headers["Authorization"] = f"Bearer {access_token}"
+
                 async with httpx.AsyncClient(timeout=20.0) as client:
                     up = await client.put(
                         upload_url,
-                        content=content.image_bytes,
-                        headers={
-                            "Authorization": f"Bearer {access_token}",
-                            "Content-Type": content.image_content_type or "image/jpeg",
-                        },
+                        content=image_bytes,
+                        headers=upload_headers,
                     )
                 if up.status_code == 401:
                     raise IntegrationAuthExpired(
@@ -419,6 +456,25 @@ class LinkedInAdapter(SocialPlatformAdapter):
                     "LinkedIn authorization expired or was revoked. Please reconnect.",
                     {"platform": "linkedin"},
                 )
+            if resp.status_code == 403:
+                msg = sanitize_error_message(resp.text[:300])
+                return PublishResult(
+                    platform="linkedin",
+                    status="FAILED",
+                    target_id=target,
+                    target_name=target_name,
+                    error=f"LinkedIn permission denied: Your account lacks required scopes (w_member_social or w_organization_social) for this target. {msg}",
+                    error_code="LINKEDIN_PERMISSION_DENIED",
+                )
+            if resp.status_code == 429:
+                return PublishResult(
+                    platform="linkedin",
+                    status="FAILED",
+                    target_id=target,
+                    target_name=target_name,
+                    error="LinkedIn publishing rate limit reached. Please try again later.",
+                    error_code="LINKEDIN_RATE_LIMITED",
+                )
             if resp.status_code >= 300:
                 msg = sanitize_error_message(resp.text[:300])
                 return PublishResult(
@@ -430,11 +486,12 @@ class LinkedInAdapter(SocialPlatformAdapter):
                     error_code="LINKEDIN_POST_FAILED",
                 )
             post_id = resp.headers.get("x-restli-id") or (resp.json().get("id") if resp.content else None) or "published"
+            post_url = f"https://www.linkedin.com/feed/update/{post_id}" if post_id != "published" else "https://www.linkedin.com/feed/"
             return PublishResult(
                 platform="linkedin",
                 status="PUBLISHED",
                 platform_post_id=str(post_id),
-                post_url=f"https://www.linkedin.com/feed/update/{post_id}",
+                post_url=post_url,
                 target_id=target,
                 target_name=target_name,
             )
@@ -449,4 +506,3 @@ class LinkedInAdapter(SocialPlatformAdapter):
                 error=sanitize_error_message(str(exc))[:300],
                 error_code="LINKEDIN_POST_FAILED",
             )
-

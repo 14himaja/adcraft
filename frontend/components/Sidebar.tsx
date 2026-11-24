@@ -72,19 +72,19 @@ export function Sidebar({
     },
     {
       id: 'posts',
-      label: 'Post to Instagram',
+      label: 'Publish Posts',
       icon: Send,
       onClick: () => onSelectSection && onSelectSection('posts'),
     },
     {
       id: 'insights',
-      label: 'Insights & Analytics',
+      label: 'Analytics',
       icon: BarChart3,
       onClick: () => onSelectSection && onSelectSection('insights'),
     },
     {
       id: 'connections',
-      label: 'Social Connections',
+      label: 'Social Accounts',
       icon: Link2,
       onClick: () =>
         onSelectSection ? onSelectSection('connections') : onOpenSettings && onOpenSettings('meta'),
