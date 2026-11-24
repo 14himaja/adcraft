@@ -13,6 +13,52 @@ PLATFORMS_ORDER: tuple[PlatformId, ...] = (
 
 
 @dataclass(frozen=True)
+class PublishFormat:
+    id: str  # e.g. "facebook_feed", "facebook_story", "instagram_feed", "instagram_story", "linkedin_organization_post", "linkedin_personal_post"
+    name: str  # e.g. "Facebook Feed", "Instagram Story", "LinkedIn Organization Page"
+    platform: PlatformId
+    kind: Literal["organic", "ad"] = "organic"
+    description: str = ""
+    requires_image: bool = False
+    caption_support_note: str = ""
+    max_text_length: int = 2000
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "platform": self.platform,
+            "kind": self.kind,
+            "description": self.description,
+            "requires_image": self.requires_image,
+            "caption_support_note": self.caption_support_note,
+            "max_text_length": self.max_text_length,
+        }
+
+
+@dataclass(frozen=True)
+class AdAccount:
+    id: str
+    name: str
+    currency: str = "USD"
+    status: str = "ACTIVE"
+    role: str = "ADMINISTRATOR"
+    can_create_campaigns: bool = True
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "currency": self.currency,
+            "status": self.status,
+            "role": self.role,
+            "can_create_campaigns": self.can_create_campaigns,
+            "extra": self.extra,
+        }
+
+
+@dataclass(frozen=True)
 class PlatformCapabilities:
     supports_oauth: bool = True
     supports_refresh: bool = False
@@ -30,6 +76,8 @@ class PlatformCapabilities:
     max_image_size_mb: int = 8
     max_video_size_mb: int = 100
     target_label: str = "Account"
+    supported_formats: tuple[str, ...] = ()
+    supports_ads: bool = False
 
 
 @dataclass(frozen=True)
@@ -129,4 +177,3 @@ class PublishResult:
             "scheduled": self.scheduled,
             "scheduled_at": self.scheduled_at,
         }
-
