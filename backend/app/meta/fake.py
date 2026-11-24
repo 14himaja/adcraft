@@ -84,6 +84,7 @@ class FakeAdsGateway:
         self.published_posts: list[dict] = []
         self.facebook_posts: list[dict] = []
         self.subscribed_pages: list[str] = []
+        self.creative_polls: dict[str, int] = {}
         self._next_id = 0
 
     def _injected(self, step: str) -> str | None:
@@ -160,6 +161,32 @@ class FakeAdsGateway:
         obj = self._get(ad_id)
         status = obj.get("status", "PAUSED")
         return {"effective_status": status, "review_feedback": None, "issues": []}
+
+    async def get_ad_creative(self, creative_id: str) -> dict:
+        self._injected("CREATIVE_GET")
+        obj = self.objects.get(creative_id) or {}
+        params = obj.get("params") or {}
+        explicit_media_id = obj.get("effective_instagram_media_id") or params.get("effective_instagram_media_id")
+        explicit_permalink = obj.get("instagram_permalink_url") or params.get("instagram_permalink_url")
+
+        if explicit_media_id:
+            media_id = explicit_media_id
+            permalink = explicit_permalink or f"https://instagram.com/p/{media_id}"
+        else:
+            polls = self.creative_polls.get(creative_id, 0) + 1
+            self.creative_polls[creative_id] = polls
+            if polls == 1:
+                media_id = None
+                permalink = None
+            else:
+                media_id = f"ig_media_{creative_id}"
+                permalink = f"https://instagram.com/p/{media_id}"
+
+        return {
+            "id": creative_id,
+            "effective_instagram_media_id": str(media_id) if media_id else None,
+            "instagram_permalink_url": str(permalink) if permalink else None,
+        }
 
     async def list_recent_posts(self, page_id: str, ig_user_id: str | None = None) -> list[dict]:
         posts = []
@@ -246,6 +273,13 @@ class FakeAdsGateway:
         self._injected("POST")
         self.facebook_posts.append(
             {"page_id": page_id, "image_url": image_url, "caption": caption, "story": False}
+        )
+        return f"fake_fb_{len(self.facebook_posts)}"
+
+    async def publish_facebook_feed_post(self, page_id: str, message: str, link: str | None = None) -> str:
+        self._injected("POST")
+        self.facebook_posts.append(
+            {"page_id": page_id, "image_url": None, "caption": message, "link": link, "story": False}
         )
         return f"fake_fb_{len(self.facebook_posts)}"
 

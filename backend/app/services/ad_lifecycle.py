@@ -146,7 +146,11 @@ async def _go_live(db, campaign: dict, container, keys: tuple[str, ...], reason:
         {"$set": {"ad_campaign_status": "active"}},
     )
     fresh = await db.campaigns.find_one({"_id": campaign["_id"]})
-    return await transition(db, fresh, AdState.ACTIVE, actor="user", reason=reason, clock=clock)
+    res = await transition(db, fresh, AdState.ACTIVE, actor="user", reason=reason, clock=clock)
+    from app.meta.publisher import ingest_ad_campaign
+    fresh_active = await db.campaigns.find_one({"_id": campaign["_id"]})
+    await container.spawn(ingest_ad_campaign(db, container, fresh_active))
+    return res
 
 
 async def activate(db, campaign: dict, *, container) -> dict:
@@ -162,10 +166,8 @@ async def resume(db, campaign: dict, *, container) -> dict:
 async def pause(db, campaign: dict, *, container) -> dict:
     _require(campaign, AdState.ACTIVE)  # always allowed: pausing stops spend
     await _set_meta_status(db, campaign, container, ("campaign_id",), "PAUSED")
-    await db.social_posts.update_many(
-        {"campaign_id": campaign["_id"]},
-        {"$set": {"ad_campaign_status": "stopped"}},
-    )
+    from app.services.social_knowledge import deactivate_campaign_knowledge
+    await deactivate_campaign_knowledge(db, campaign["_id"], clock=container.clock, status="paused")
     fresh = await db.campaigns.find_one({"_id": campaign["_id"]})
     return await transition(
         db, fresh, AdState.PAUSED, actor="user", reason="user paused", clock=container.clock

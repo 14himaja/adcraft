@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useSyncExternalStore } from 'react';
 import { useSWRConfig } from 'swr';
 import { Sidebar, SidebarSection } from '../components/Sidebar';
 import { TopHeader } from '../components/TopHeader';
@@ -18,11 +18,40 @@ import { MediaView } from '../components/MediaView';
 import { InsightsView } from '../components/InsightsView';
 import { DmAgentView } from '../components/DmAgentView';
 import { OrganicPostView } from '../components/OrganicPostView';
+import { SocialMediaConnections } from '../components/SocialMediaConnections';
+import { MultiPlatformPublisher } from '../components/MultiPlatformPublisher';
 import { Campaign, getMe, logout, UserProfile, MetaInterest, MetaLocation } from '../lib/api';
 import { useMetaConnection } from '../lib/meta';
+import { useSocialConnections } from '../lib/integrations';
+
+const VALID_SECTIONS: SidebarSection[] = [
+  'dashboard',
+  'campaigns',
+  'audience',
+  'media',
+  'insights',
+  'dm',
+  'posts',
+  'connections',
+];
+
+function subscribeNoop() {
+  return () => {};
+}
 
 export default function Home() {
-  const [activeSection, setActiveSection] = useState<SidebarSection>('dashboard');
+  const urlSection = useSyncExternalStore(
+    subscribeNoop,
+    () => {
+      const sec = new URLSearchParams(window.location.search).get('section') as SidebarSection | null;
+      return sec && VALID_SECTIONS.includes(sec) ? sec : 'dashboard';
+    },
+    () => 'dashboard' as SidebarSection
+  );
+  const [selectedSection, setSelectedSection] = useState<SidebarSection | null>(null);
+  const activeSection = selectedSection ?? urlSection;
+  const setActiveSection = (sec: SidebarSection) => setSelectedSection(sec);
+  const [publishMode, setPublishMode] = useState<'instagram' | 'multi'>('multi');
   // null = closed; { id: null } = new draft from scratch; { id, campaign } = edit saved draft
   const [studio, setStudio] = useState<{ id: string | null; campaign?: Campaign | null } | null>(null);
   // null = closed; { campaign: null } = new chat; { campaign } = continue a draft in the chat
@@ -38,8 +67,9 @@ export default function Home() {
   // User Authentication State
   const [user, setUser] = useState<UserProfile | null>(null);
 
-  // Meta Connection State via SWR
+  // Meta & Multi-Platform Connection State via SWR
   const { connection, mutate: mutateMeta } = useMetaConnection();
+  const { connectedCount, mutate: mutateSocial } = useSocialConnections();
   const isMetaConnected = connection?.status === 'ACTIVE';
 
   useEffect(() => {
@@ -80,11 +110,11 @@ export default function Home() {
       getMe().then(setUser).catch(() => {});
     }
     mutateMeta();
+    mutateSocial();
     setAuthOpen(false);
 
-    if (!isMetaConnected) {
-      setSettingsTab('meta');
-      setSettingsOpen(true);
+    if (!isMetaConnected && connectedCount === 0) {
+      setActiveSection('connections');
     }
   };
 
@@ -93,9 +123,11 @@ export default function Home() {
       await logout();
       setUser(null);
       mutateMeta(undefined, false);
+      mutateSocial(undefined, false);
     } catch {
       setUser(null);
       mutateMeta(undefined, false);
+      mutateSocial(undefined, false);
     }
   };
 
@@ -143,7 +175,9 @@ export default function Home() {
           user={user}
           metaConnected={isMetaConnected}
           metaUsername={connection?.instagram_username}
+          connectedCount={connectedCount}
           onOpenAuth={handleOpenAuth}
+          onOpenConnections={() => setActiveSection('connections')}
           onOpenSettings={() => handleOpenSettings('meta')}
           onLogout={handleLogout}
         />
@@ -195,7 +229,49 @@ export default function Home() {
 
           {activeSection === 'dm' && <DmAgentView />}
 
-          {activeSection === 'posts' && <OrganicPostView />}
+          {activeSection === 'posts' && (
+            <div className="space-y-6">
+              <div className="inline-flex p-1 rounded-2xl bg-white dark:bg-[#111827] border border-[#EDE6DD] dark:border-white/10 text-xs font-bold">
+                <button
+                  type="button"
+                  onClick={() => setPublishMode('multi')}
+                  className={`px-4 py-2 rounded-xl transition-colors cursor-pointer ${
+                    publishMode === 'multi'
+                      ? 'bg-[#F26D5B] text-white shadow-xs'
+                      : 'text-[#7A6C63] dark:text-slate-400 hover:text-[#1F1A18] dark:hover:text-white'
+                  }`}
+                >
+                  Publish Posts (Unified Multi-Platform)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPublishMode('instagram')}
+                  className={`px-4 py-2 rounded-xl transition-colors cursor-pointer ${
+                    publishMode === 'instagram'
+                      ? 'bg-[#F26D5B] text-white shadow-xs'
+                      : 'text-[#7A6C63] dark:text-slate-400 hover:text-[#1F1A18] dark:hover:text-white'
+                  }`}
+                >
+                  Instagram Direct (Single)
+                </button>
+              </div>
+              {publishMode === 'instagram' ? (
+                <OrganicPostView />
+              ) : (
+                <MultiPlatformPublisher onOpenConnections={() => setActiveSection('connections')} />
+              )}
+            </div>
+          )}
+
+          {activeSection === 'connections' && (
+            <SocialMediaConnections
+              returnTo="/?section=connections"
+              onOpenPublisher={() => {
+                setPublishMode('multi');
+                setActiveSection('posts');
+              }}
+            />
+          )}
 
           {activeSection === 'insights' && (
             <InsightsView />

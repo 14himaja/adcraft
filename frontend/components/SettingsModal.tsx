@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { X, Link2, User, Sun, Moon, Palette, Check, Key, CreditCard, ExternalLink } from 'lucide-react';
-import { MetaConnectCard } from './MetaConnectCard';
+import { SocialMediaConnections } from './SocialMediaConnections';
 import { UserProfile } from '../lib/api';
 import { useTheme } from '../lib/theme';
 import { useMetaConnection } from '../lib/meta';
@@ -50,11 +50,11 @@ function SettingsPanel({
           <div className="flex items-center gap-3">
             <div>
               <h2 className="text-xl font-extrabold text-[#1F1A18] dark:text-white tracking-tight leading-none">
-                {metaConnectionOnly ? 'Meta Connection' : 'Settings'}
+                {metaConnectionOnly ? 'Social Media Connections' : 'Settings'}
               </h2>
               <p className="text-xs text-[#7A6C63] dark:text-slate-400 mt-1">
                 {metaConnectionOnly
-                  ? 'Connect your Meta ad account, Facebook Page, and Instagram account.'
+                  ? 'Connect and manage all your social media accounts from one place.'
                   : 'Manage your account, AI provider, appearance, ad account, and billing.'}
               </p>
             </div>
@@ -81,7 +81,7 @@ function SettingsPanel({
             }`}
           >
             <Link2 className="w-4 h-4" />
-            <span>Meta Connection</span>
+            <span>Social Connections</span>
           </button>}
 
           {!metaConnectionOnly && <button
@@ -147,7 +147,7 @@ function SettingsPanel({
         <div className="flex-1 overflow-y-auto p-6">
           {activeTab === 'meta' && (
             <div>
-              <MetaConnectCard />
+              <SocialMediaConnections compact />
             </div>
           )}
 

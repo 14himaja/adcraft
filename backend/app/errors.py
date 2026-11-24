@@ -17,6 +17,10 @@ class NotFound(AppError):
     status, code = 404, "NOT_FOUND"
 
 
+class Forbidden(AppError):
+    status, code = 403, "FORBIDDEN"
+
+
 class Unauthenticated(AppError):
     status, code = 401, "UNAUTHENTICATED"
 

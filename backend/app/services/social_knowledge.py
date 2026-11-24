@@ -32,6 +32,8 @@ async def ingest_post(
     workspace_id: str,
     platform: str,
     platform_post_id: str,
+    ad_id: str | None = None,
+    effective_instagram_media_id: str | None = None,
     post_url: str = "",
     title: str = "",
     caption: str = "",
@@ -42,16 +44,17 @@ async def ingest_post(
     source: str = "adcraft",
     published_at: datetime | None = None,
     auto_process: bool = True,
+    offer: str | dict | None = None,
+    landing_url: str | None = None,
+    cta: str | None = None,
+    audience: dict | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    creative_id: str | None = None,
 ) -> dict:
     """Ingests a published post into social_posts idempotently and schedules understanding."""
     now = container.clock.now()
     published_at = published_at or now
-
-    filter_query = {
-        "workspace_id": workspace_id,
-        "platform": platform,
-        "platform_post_id": str(platform_post_id),
-    }
 
     campaign_oid = None
     if campaign_id:
@@ -60,11 +63,31 @@ async def ingest_post(
         except (InvalidId, TypeError):
             campaign_oid = None
 
+    filter_query = {
+        "workspace_id": workspace_id,
+        "platform": platform,
+    }
+    match_or = [{"platform_post_id": str(platform_post_id)}]
+    if ad_id:
+        match_or.append({"ad_id": str(ad_id)})
+        match_or.append({"platform_post_id": str(ad_id)})
+    if effective_instagram_media_id:
+        match_or.append({"effective_instagram_media_id": str(effective_instagram_media_id)})
+        match_or.append({"platform_post_id": str(effective_instagram_media_id)})
+    if campaign_oid:
+        match_or.append({"campaign_id": campaign_oid})
+    if creative_id:
+        match_or.append({"creative_id": str(creative_id)})
+    filter_query["$or"] = match_or
+
     post_doc = {
         "workspace_id": workspace_id,
         "user_id": user_id,
         "platform": platform,
         "platform_post_id": str(platform_post_id),
+        "ad_id": str(ad_id) if ad_id else None,
+        "creative_id": str(creative_id) if creative_id else None,
+        "effective_instagram_media_id": str(effective_instagram_media_id) if effective_instagram_media_id else None,
         "post_url": post_url or f"https://instagram.com/p/{platform_post_id}",
         "title": title or "",
         "caption": caption or "",
@@ -75,6 +98,12 @@ async def ingest_post(
         "post_status": "published",
         "ad_campaign_status": ad_campaign_status,
         "source": source,
+        "offer": offer,
+        "landing_url": landing_url,
+        "cta": cta,
+        "audience": audience,
+        "start_date": start_date,
+        "end_date": end_date,
         "updated_at": now,
     }
 
@@ -206,9 +235,10 @@ async def process_post_understanding(db, container: Container, post_id: str) -> 
             offer = extracted.offer
             # Check offer expiry
             offer_status = offer.status
-            if offer.valid_until:
+            v_until = offer.valid_until or post.get("end_date")
+            if v_until:
                 try:
-                    exp_date = datetime.strptime(offer.valid_until, "%Y-%m-%d").date()
+                    exp_date = datetime.strptime(v_until, "%Y-%m-%d").date()
                     now_date = now.date() if hasattr(now, "date") else utcnow().date()
                     if exp_date < now_date:
                         offer_status = "EXPIRED"
@@ -226,8 +256,8 @@ async def process_post_understanding(db, container: Container, post_id: str) -> 
                         "price": offer.price,
                         "currency": offer.currency,
                         "discount": offer.discount,
-                        "valid_from": offer.valid_from,
-                        "valid_until": offer.valid_until,
+                        "valid_from": offer.valid_from or post.get("start_date"),
+                        "valid_until": v_until,
                         "terms_and_conditions": offer.terms_and_conditions,
                         "offer_status": offer_status,
                         "updated_at": now,
@@ -236,8 +266,70 @@ async def process_post_understanding(db, container: Container, post_id: str) -> 
                 },
                 upsert=True,
             )
+        elif post.get("offer"):
+            offer_desc = str(post["offer"])
+            offer_status = "ACTIVE"
+            v_until = post.get("end_date")
+            if v_until:
+                try:
+                    exp_date = datetime.strptime(v_until, "%Y-%m-%d").date()
+                    now_date = now.date() if hasattr(now, "date") else utcnow().date()
+                    if exp_date < now_date:
+                        offer_status = "EXPIRED"
+                except Exception:
+                    pass
+            await db.offers.update_one(
+                {"workspace_id": workspace_id, "post_id": post_id},
+                {
+                    "$set": {
+                        "workspace_id": workspace_id,
+                        "user_id": user_id,
+                        "post_id": post_id,
+                        "offer_description": offer_desc,
+                        "valid_from": post.get("start_date"),
+                        "valid_until": v_until,
+                        "terms_and_conditions": [],
+                        "offer_status": offer_status,
+                        "updated_at": now,
+                    },
+                    "$setOnInsert": {"created_at": now},
+                },
+                upsert=True,
+            )
 
-        # 5. Generate and index knowledge chunks with embeddings
+        # 5. Image fingerprinting and image-to-post indexing
+        image_fp = None
+        media_ref = post.get("media_reference")
+        if media_ref:
+            try:
+                from app.services.image_matcher import (
+                    compute_image_fingerprint,
+                    fetch_image_from_gridfs,
+                    fetch_image_from_url,
+                )
+                ref_str = str(media_ref)
+                img = None
+                if ref_str.startswith("http://") or ref_str.startswith("https://"):
+                    img = await fetch_image_from_url(ref_str)
+                else:
+                    img = await fetch_image_from_gridfs(db, ref_str)
+                if img:
+                    image_fp = compute_image_fingerprint(img)
+                    await db.social_posts.update_one(
+                        {"_id": oid},
+                        {
+                            "$set": {
+                                "image_fingerprint": image_fp,
+                                "image_hash": image_fp["dhash"],
+                                "media_id": str(post.get("platform_post_id") or ""),
+                                "updated_at": now,
+                            }
+                        },
+                    )
+            except Exception as img_err:
+                log.warning("post_image_fingerprint_failed", post_id=post_id, error=str(img_err))
+
+        # 6. Generate and index knowledge chunks with embeddings
         # Clear old chunks for this post
         await db.knowledge_chunks.delete_many({"post_id": post_id, "workspace_id": workspace_id})
 
@@ -260,17 +352,25 @@ async def process_post_understanding(db, container: Container, post_id: str) -> 
             })
 
         # Chunk 3: Offer details if present
-        if extracted.offer:
+        if extracted.offer or post.get("offer"):
             off = extracted.offer
-            off_text = f"Special Offer: {off.description}. Price: ₹{off.price if off.price else 'N/A'}. "
-            if off.discount:
-                off_text += f"Discount: {off.discount}. "
-            if off.valid_until:
-                off_text += f"Valid until: {off.valid_until}. "
+            if off:
+                off_text = f"Special Offer: {off.description}. Price: ₹{off.price if off.price else 'N/A'}. "
+                if off.discount:
+                    off_text += f"Discount: {off.discount}. "
+                v_until = off.valid_until or post.get("end_date")
+                if v_until:
+                    off_text += f"Valid until: {v_until}. "
+                status = off.status
+            else:
+                off_text = f"Special Offer: {post['offer']}. "
+                if post.get("end_date"):
+                    off_text += f"Valid until: {post['end_date']}. "
+                status = "ACTIVE"
             chunks.append({
                 "chunk_type": "offer",
                 "text": off_text,
-                "metadata": {"offer_status": off.status, "valid_until": off.valid_until},
+                "metadata": {"offer_status": status, "valid_until": post.get("end_date") or getattr(off, "valid_until", None)},
             })
 
         # Chunk 4: Anticipated FAQs
@@ -280,6 +380,42 @@ async def process_post_understanding(db, container: Container, post_id: str) -> 
                 "chunk_type": "faq",
                 "text": faq_text,
                 "metadata": {"question": faq.question},
+            })
+
+        # Chunk 5: Campaign Action Details (CTA, Landing URL, Target Audience, Dates)
+        action_parts = []
+        if post.get("cta"):
+            action_parts.append(f"Call to Action: {post['cta']}")
+        if post.get("landing_url"):
+            action_parts.append(f"Landing URL / Website: {post['landing_url']}")
+        if post.get("start_date") or post.get("end_date"):
+            action_parts.append(f"Campaign Active Dates: {post.get('start_date', '')} to {post.get('end_date', '')}".strip())
+        if post.get("audience"):
+            aud = post["audience"]
+            if isinstance(aud, dict) and aud.get("interests"):
+                names = [i.get("name") if isinstance(i, dict) else str(i) for i in aud["interests"]]
+                action_parts.append(f"Target Audience: {', '.join(names)}")
+        if action_parts:
+            chunks.append({
+                "chunk_type": "campaign_action",
+                "text": "Campaign Details: " + ". ".join(action_parts),
+                "metadata": {
+                    "cta": post.get("cta"),
+                    "landing_url": post.get("landing_url"),
+                    "dates": f"{post.get('start_date', '')} to {post.get('end_date', '')}",
+                },
+            })
+
+        # Chunk 6: Image visual chunk
+        if image_fp:
+            chunks.append({
+                "chunk_type": "image",
+                "text": f"Visual image content of post '{extracted.subject or post.get('title', 'Post')}'. Visual hash: {image_fp['dhash']}. Aspect ratio: {image_fp['aspect_ratio']}.",
+                "metadata": {
+                    "dhash": image_fp["dhash"],
+                    "ahash": image_fp["ahash"],
+                    "aspect_ratio": image_fp["aspect_ratio"],
+                },
             })
 
         # Insert chunks with embeddings
@@ -292,6 +428,8 @@ async def process_post_understanding(db, container: Container, post_id: str) -> 
                 "post_id": post_id,
                 "platform": post.get("platform", "instagram"),
                 "platform_post_id": post["platform_post_id"],
+                "ad_id": post.get("ad_id"),
+                "effective_instagram_media_id": post.get("effective_instagram_media_id"),
                 "campaign_id": str(post.get("campaign_id")) if post.get("campaign_id") else None,
                 "post_type": extracted.post_type,
                 "post_url": post.get("post_url", ""),
@@ -317,7 +455,8 @@ async def process_post_understanding(db, container: Container, post_id: str) -> 
             {"_id": oid},
             {"$set": {"knowledge_status": "FAILED", "updated_at": now}},
         )
-        await db.knowledge_jobs.update_one(
+        from pymongo import ReturnDocument
+        job = await db.knowledge_jobs.find_one_and_update(
             {"post_id": post_id, "workspace_id": workspace_id},
             {
                 "$set": {
@@ -327,7 +466,24 @@ async def process_post_understanding(db, container: Container, post_id: str) -> 
                 },
                 "$inc": {"retry_count": 1},
             },
+            return_document=ReturnDocument.AFTER,
         )
+        retry_count = job.get("retry_count", 1) if job else 1
+        MAX_RETRIES = 3
+        if retry_count < MAX_RETRIES:
+            delay = (2 ** (retry_count - 1)) * 0.5
+            if getattr(container, "retry_wait", None) is not None and "wait_none" in str(container.retry_wait):
+                delay = 0
+            elif getattr(container.settings, "app_env", "") == "test":
+                delay = 0
+
+            async def _retry_post_understanding(db_ref, cont_ref, p_id: str, wait_s: float):
+                if wait_s > 0:
+                    await asyncio.sleep(wait_s)
+                await process_post_understanding(db_ref, cont_ref, p_id)
+
+            await container.spawn(_retry_post_understanding(db, container, post_id, delay))
+
         return {"status": "FAILED", "post_id": post_id, "error": str(exc)}
 
 
@@ -506,3 +662,113 @@ async def get_knowledge_status(db, user_id, workspace_id: str) -> dict:
         "active_offers": active_offers,
         "expired_offers": expired_offers,
     }
+
+async def reprocess_pending_or_failed_jobs(db, container: Container) -> int:
+    """Finds all PENDING or FAILED knowledge jobs and re-runs understanding."""
+    cursor = db.knowledge_jobs.find({"status": {"$in": ["PENDING", "FAILED"]}})
+    count = 0
+    async for job in cursor:
+        post_id = job.get("post_id")
+        if not post_id:
+            continue
+        try:
+            oid = _to_oid(post_id)
+            post = await db.social_posts.find_one({"_id": oid})
+        except Exception:
+            post = None
+        if post and post.get("post_status") != "deleted":
+            await db.knowledge_jobs.update_one(
+                {"_id": job["_id"]},
+                {"$set": {"status": "PENDING", "updated_at": container.clock.now()}},
+            )
+            await container.spawn(process_post_understanding(db, container, str(post_id)))
+            count += 1
+    return count
+
+
+async def deactivate_campaign_knowledge(db, campaign_id, *, clock=None, status: str = "paused") -> None:
+    """Deactivates chunks and updates social posts when a campaign is paused, ended, or deleted."""
+    now = clock.now() if clock else utcnow()
+    camp_id_str = str(campaign_id)
+    camps = [camp_id_str]
+    try:
+        camps.append(ObjectId(camp_id_str))
+    except Exception:
+        pass
+
+    set_fields = {"ad_campaign_status": status, "updated_at": now}
+    if status == "deleted":
+        set_fields["post_status"] = "deleted"
+        set_fields["deleted_at"] = now
+
+    await db.social_posts.update_many(
+        {"campaign_id": {"$in": camps}},
+        {"$set": set_fields},
+    )
+
+    post_ids = [str(p["_id"]) async for p in db.social_posts.find({"campaign_id": {"$in": camps}}, {"_id": 1})]
+
+    chunk_filter = [{"campaign_id": {"$in": [camp_id_str, *camps]}}]
+    if post_ids:
+        chunk_filter.append({"post_id": {"$in": post_ids}})
+
+    await db.knowledge_chunks.update_many(
+        {"$or": chunk_filter},
+        {"$set": {"is_active": False, "updated_at": now}},
+    )
+
+    if post_ids:
+        await db.offers.update_many(
+            {"post_id": {"$in": post_ids}},
+            {"$set": {"offer_status": "INACTIVE", "updated_at": now}},
+        )
+
+
+async def backfill_image_fingerprints(db, workspace_id: str | None = None) -> dict:
+    """Computes image fingerprints and hashes for published posts lacking them."""
+    from app.services.image_matcher import (
+        compute_image_fingerprint,
+        fetch_image_from_gridfs,
+        fetch_image_from_url,
+    )
+    query: dict[str, Any] = {
+        "post_status": "published",
+        "$or": [{"image_hash": None}, {"image_fingerprint": None}],
+    }
+    if workspace_id:
+        query["workspace_id"] = workspace_id
+
+    cursor = db.social_posts.find(query)
+    updated, failed = 0, 0
+    async for post in cursor:
+        ref = post.get("media_reference")
+        if not ref:
+            continue
+        try:
+            ref_str = str(ref)
+            img = (
+                await fetch_image_from_url(ref_str)
+                if ref_str.startswith("http")
+                else await fetch_image_from_gridfs(db, ref_str)
+            )
+            if img:
+                fp = compute_image_fingerprint(img)
+                await db.social_posts.update_one(
+                    {"_id": post["_id"]},
+                    {
+                        "$set": {
+                            "image_fingerprint": fp,
+                            "image_hash": fp["dhash"],
+                            "media_id": str(post.get("platform_post_id") or ""),
+                        }
+                    },
+                )
+                updated += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+
+    return {"updated": updated, "failed": failed}
+
+

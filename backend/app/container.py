@@ -35,6 +35,17 @@ class Container:
     retry_wait: object = DEFAULT_WAIT  # tenacity wait for Meta write retries; tests use wait_none()
 
 
+def build_meta_gateway(
+    settings: Settings, *, access_token: str, mode: str
+) -> tuple[AdsReader, AdsWriter]:
+    """Construct a Meta gateway from container.py to keep gateway instantiation centralized."""
+    if mode == "fake" or settings.meta_mode == "fake":
+        fake = FakeAdsGateway(fail_at=parse_fail_at(settings.fake_meta_fail_at))
+        return fake, fake
+    gateway = MetaSdkGateway(access_token=access_token, settings=settings)
+    return gateway, gateway
+
+
 def build_container(
     settings: Settings,
     *,
@@ -70,6 +81,9 @@ def build_container(
         )
 
     def real_gateway(connection: dict) -> tuple[AdsReader, AdsWriter]:
+        if connection.get("mode") == "fake":
+            fake = fake_gateway or FakeAdsGateway(fail_at=parse_fail_at(settings.fake_meta_fail_at))
+            return fake, fake
         token = decrypt_token(settings.token_encryption_key, connection["token_ciphertext"])
         gateway = MetaSdkGateway(access_token=token, settings=settings)
         return gateway, gateway

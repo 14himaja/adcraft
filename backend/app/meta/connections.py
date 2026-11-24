@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+from typing import Any
+from datetime import UTC, datetime, timedelta
 
 from pymongo import ReturnDocument
 
@@ -11,6 +12,12 @@ from app.meta.oauth import SCOPES
 from app.security.crypto import encrypt_token
 
 EXPIRY_WARNING = timedelta(days=7)
+
+def _ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
 PUBLIC_FIELDS = (
     "ad_account_id",
     "ad_account_name",
@@ -69,7 +76,9 @@ async def require_connection(db, user_id, *, clock: Clock) -> dict:
     connection = await get_connection(db, user_id)
     if connection is None:
         raise MetaNotConnected("Connect your Instagram ads account in Settings first")
-    if connection["status"] == "EXPIRED" or connection["token_expires_at"] <= clock.now():
+    expires_at = _ensure_utc(connection["token_expires_at"])
+    now = _ensure_utc(clock.now())
+    if connection["status"] == "EXPIRED" or expires_at <= now:
         raise MetaAuthExpired("Your Meta connection expired. Reconnect Instagram ads in Settings.")
     return connection
 
@@ -103,6 +112,7 @@ async def select_assets(
     page: dict | None = None,
     instagram: dict | None = None,
     clock: Clock,
+    container: Any = None,
 ) -> dict:
     updates: dict = {"updated_at": clock.now()}
     if ad_account is not None:
@@ -117,11 +127,19 @@ async def select_assets(
         updates["instagram_user_id"] = instagram["id"]
         updates["instagram_username"] = instagram["username"]
 
-    return await db.meta_connections.find_one_and_update(
+    res = await db.meta_connections.find_one_and_update(
         {"user_id": user_id},
         {"$set": updates},
         return_document=ReturnDocument.AFTER,
     )
+    if container is not None and res and res.get("page_id"):
+        try:
+            _, writer = container.gateway_for(res)
+            await writer.subscribe_messages(res["page_id"])
+        except Exception as exc:
+            import structlog
+            structlog.get_logger().warning("subscribe_messages_failed_on_select", page_id=res.get("page_id"), error=str(exc))
+    return res
 
 
 async def disconnect_asset(db, user_id, *, asset_type: str, clock: Clock) -> dict:
@@ -145,7 +163,7 @@ async def disconnect_asset(db, user_id, *, asset_type: str, clock: Clock) -> dic
             "instagram_username": "",
         }
 
-    return await db.meta_connections.find_one_and_update(
+    res = await db.meta_connections.find_one_and_update(
         {"user_id": user_id},
         {
             "$unset": unset_fields,
@@ -153,6 +171,10 @@ async def disconnect_asset(db, user_id, *, asset_type: str, clock: Clock) -> dic
         },
         return_document=ReturnDocument.AFTER,
     )
+    if res and not (res.get("ad_account_id") or res.get("page_id") or res.get("instagram_user_id")):
+        await db.meta_connections.delete_one({"user_id": user_id})
+        return {}
+    return res or {}
 
 
 async def mark_expired(db, user_id, *, clock: Clock) -> None:
@@ -166,11 +188,12 @@ async def mark_expired(db, user_id, *, clock: Clock) -> None:
 def public_view(connection: dict | None, *, now: datetime) -> dict:
     if connection is None:
         return {"status": "NOT_CONNECTED"}
-    expires_at = connection["token_expires_at"]
+    expires_at = _ensure_utc(connection["token_expires_at"])
+    now_utc = _ensure_utc(now)
     return {
         "status": connection["status"],
         "mode": connection["mode"],
         "expires_at": expires_at.isoformat(),
-        "expiring_soon": connection["status"] == "ACTIVE" and expires_at - now <= EXPIRY_WARNING,
+        "expiring_soon": connection["status"] == "ACTIVE" and expires_at - now_utc <= EXPIRY_WARNING,
         **{key: connection.get(key) for key in PUBLIC_FIELDS},
     }

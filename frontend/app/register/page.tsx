@@ -1,10 +1,17 @@
 'use client';
 
-import React from 'react';
+import React, { Suspense } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { AuthForm } from '../../components/AuthForm';
 
-export default function RegisterPage() {
+function RegisterContent() {
+  const searchParams = useSearchParams();
+  const redirectParam = searchParams.get('redirect') || searchParams.get('return_to');
+  const loginHref = redirectParam
+    ? `/login?redirect=${encodeURIComponent(redirectParam)}`
+    : '/login';
+
   return (
     <div className="min-h-screen bg-[#090D16] text-[#F8FAFC] flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center mb-6">
@@ -12,7 +19,7 @@ export default function RegisterPage() {
           AdCraft Studio
         </h2>
         <p className="mt-2 text-sm text-slate-400">
-          Create an account and connect your original Meta assets
+          Create an account to connect and manage your social channels
         </p>
       </div>
 
@@ -22,10 +29,24 @@ export default function RegisterPage() {
 
       <p className="mt-6 text-center text-xs sm:text-sm text-slate-400">
         Already have an account?{' '}
-        <Link href="/login" className="font-semibold text-[#F26D5B] hover:text-[#FF8E53] transition-colors">
+        <Link href={loginHref} className="font-semibold text-[#F26D5B] hover:text-[#FF8E53] transition-colors">
           Sign in here
         </Link>
       </p>
     </div>
+  );
+}
+
+export default function RegisterPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-[#090D16] text-[#F8FAFC] flex items-center justify-center text-sm text-slate-400">
+          Loading registration...
+        </div>
+      }
+    >
+      <RegisterContent />
+    </Suspense>
   );
 }

@@ -51,7 +51,7 @@ async def test_read_is_retried_on_code_17_then_succeeds(real_settings, mock):
     mock.add("GET", url(real_settings, "me/accounts"), json=m0("r2_pages.response"))
     pages = await gateway(real_settings).list_pages()
     assert pages[0]["name"] == "Social Ads Demo"
-    assert len(mock.calls) == 2
+    assert len([c for c in mock.calls if "me/accounts" in c.request.url]) == 2
 
 
 async def test_create_is_not_retried(real_settings, mock):

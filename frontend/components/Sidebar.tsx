@@ -16,7 +16,7 @@ import {
   Send,
 } from 'lucide-react';
 
-export type SidebarSection = 'dashboard' | 'campaigns' | 'audience' | 'media' | 'insights' | 'dm' | 'posts';
+export type SidebarSection = 'dashboard' | 'campaigns' | 'audience' | 'media' | 'insights' | 'dm' | 'posts' | 'connections';
 
 interface SidebarProps {
   activeSection?: SidebarSection;
@@ -72,21 +72,22 @@ export function Sidebar({
     },
     {
       id: 'posts',
-      label: 'Post to Instagram',
+      label: 'Publish Posts',
       icon: Send,
       onClick: () => onSelectSection && onSelectSection('posts'),
     },
     {
       id: 'insights',
-      label: 'Insights & Analytics',
+      label: 'Analytics',
       icon: BarChart3,
       onClick: () => onSelectSection && onSelectSection('insights'),
     },
     {
-      id: 'meta',
-      label: 'Meta Connection',
+      id: 'connections',
+      label: 'Social Accounts',
       icon: Link2,
-      onClick: () => onOpenSettings && onOpenSettings('meta'),
+      onClick: () =>
+        onSelectSection ? onSelectSection('connections') : onOpenSettings && onOpenSettings('meta'),
     },
     {
       id: 'settings',
